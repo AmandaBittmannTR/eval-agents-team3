@@ -1,42 +1,113 @@
-# Implementation Template Repository
+# Agent Bootcamp
 
-This repository serves as the template for implementations created by the Vector AI
-Engineering team. It is designed to be used as a starting point for bootcamps, labs,
-or workshops.
+----------------------------------------------------------------------------------------
 
-## About [Implementation Name]
+This is a collection of reference implementations for Vector Institute's **Agentic AI Evaluation Bootcamp**.
 
-*Add info on the implementations.*
+## Reference Implementations
 
-## Repository Structure
+This repository includes several modules, each showcasing a different aspect of agent-based RAG systems:
 
-- **docs/**: Contains detailed documentation, additional resources, installation guides, and setup instructions that are not covered in this README.
-- **implementations/**: Implementations are organized by topics. Each topic has its own directory containing notebooks, and a README for guidance.
-- **pyproject.toml**: The `pyproject.toml` file in this repository configures various build system requirements and dependencies, centralizing project settings in a standardized format.
+**3. Evals: Automated Evaluation Pipelines**
+  Contains scripts and utilities for evaluating agent performance using LLM-as-a-judge and synthetic data generation. Includes tools for uploading datasets, running evaluations, and integrating with [Langfuse](https://langfuse.com/) for traceability.
 
-### Implementations Directory
+- **[3.1 LLM-as-a-Judge](src/3_evals/1_llm_judge/README.md)**
+  Automated evaluation pipelines using LLM-as-a-judge with Langfuse integration.
 
-Each topic within the [choice of bootcamp/lab/workshop] has a dedicated directory in the `implementations/` directory. In each directory, there is a README file that provides an overview of the topic, prerequisites, and notebook descriptions.
+- **[3.2 Evaluation on Synthetic Dataset](src/3_evals/2_synthetic_data/README.md)**
+  Showcases the generation of synthetic evaluation data for testing agents.
 
-Here is the list of the covered topics:
-- [Implementation 1]
-- [Implementation 2]
 
 ## Getting Started
 
-To get started with this bootcamp (*Change or modify the following steps based your needs.*):
-1. Clone this repository to your machine.
-2. *Include setup and installation instructions here. For additional documentation, refer to the `docs/` directory.*
-3. Begin with each topic in the `implementations/` directory, as guided by the README files.
+Set your API keys in `.env`. Use `.env.example` as a template.
 
-## License
-*Add appropriate LICENSE for this bootcamp in the main directory.*
-This project is licensed under the terms of the [LICENSE](LICENSE.md) file located in the root directory of this repository.
+```bash
+cp -v .env.example .env
+```
 
-## Contribution
-*Add appropriate CONTRIBUTING.md for this bootcamp in the main directory.*
-To get started with contributing to our project, please read our [CONTRIBUTING.md](CONTRIBUTING.md) guide.
+Run integration tests to validate that your API keys are set up correctly.
 
-## Contact Information
+```bash
+uv run --env-file .env pytest -sv tests/tool_tests/test_integration.py
+```
 
-For more information or help with navigating this repository, please contact [Vector AI ENG Team/Individual] at [Contact Email].
+## Reference Implementations
+
+For "Gradio App" reference implementations, running the script would print out a "public URL" ending in `gradio.live` (might take a few seconds to appear.) To access the gradio app with the full streaming capabilities, copy and paste this `gradio.live` URL into a new browser tab.
+
+For all reference implementations, to exit, press "Ctrl/Control-C" and wait up to ten seconds. If you are a Mac user, you should use "Control-C" and not "Command-C". Please note that by default, the gradio web app reloads automatically as you edit the Python script. There is no need to manually stop and restart the program each time you make some code changes.
+
+You might see warning messages like the following:
+
+```json
+ERROR:openai.agents:[non-fatal] Tracing client error 401: {
+  "error": {
+    "message": "Incorrect API key provided. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}
+```
+
+These warnings can be safely ignored, as they are the result of a bug in the upstream libraries. Your agent traces will be uploaded to LangFuse as configured.
+
+### 3. Evals
+
+Synthetic data.
+
+```bash
+uv run --env-file .env \
+-m src.3_evals.2_synthetic_data.synthesize_data \
+--source_dataset hf://vector-institute/hotpotqa@d997ecf:train \
+--langfuse_dataset_name search-dataset-synthetic-20250609 \
+--limit 18
+```
+
+Quantify embedding diversity of synthetic data
+
+```bash
+# Baseline: "Real" dataset
+uv run \
+--env-file .env \
+-m src.3_evals.2_synthetic_data.annotate_diversity \
+--langfuse_dataset_name search-dataset \
+--run_name cosine_similarity_bge_m3
+
+# Synthetic dataset
+uv run \
+--env-file .env \
+-m src.3_evals.2_synthetic_data.annotate_diversity \
+--langfuse_dataset_name search-dataset-synthetic-20250609 \
+--run_name cosine_similarity_bge_m3
+```
+
+Visualize embedding diversity of synthetic data
+
+```bash
+uv run \
+--env-file .env \
+gradio src/3_evals/2_synthetic_data/gradio_visualize_diversity.py
+```
+
+Run LLM-as-a-judge Evaluation on synthetic data
+
+```bash
+uv run \
+--env-file .env \
+-m src.3_evals.1_llm_judge.run_eval \
+--langfuse_dataset_name search-dataset-synthetic-20250609 \
+--run_name enwiki_weaviate \
+--limit 18
+```
+
+## Requirements
+
+- Python 3.12+
+- API keys as configured in `.env`.
+
+### Tidbit
+
+If you're curious about what "uv" stands for, it appears to have been more or
+less chosen [randomly](https://github.com/astral-sh/uv/issues/1349#issuecomment-1986451785).
