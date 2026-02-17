@@ -123,3 +123,10 @@ check if the final result is present and contains a link to the report.
 
 Those evaluation results will be sent to Langfuse as scores, where they can be analyzed
 both in an aggregate fashion as well as individually.
+
+### User Feedback
+
+On the Gradio Demo UI, there are two buttons to record user feedback: a thumbs
+up button to record positive user feedback and a thumbs down button to record
+negative user feedback. The buttons will appear at the end of the agent's execution
+and it will record the user feedback as Langfuse scores.
