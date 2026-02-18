@@ -2,6 +2,11 @@
 
 ----------------------------------------------------------------------------------------
 
+[![code checks](https://github.com/VectorInstitute/eval-agents/actions/workflows/code_checks.yml/badge.svg)](https://github.com/VectorInstitute/eval-agents/actions/workflows/code_checks.yml)
+[![unit tests](https://github.com/VectorInstitute/eval-agents/actions/workflows/unit_tests.yml/badge.svg)](https://github.com/VectorInstitute/eval-agents/actions/workflows/unit_tests.yml)
+[![codecov](https://codecov.io/github/VectorInstitute/eval-agents/graph/badge.svg?token=83MYFZ3UPA)](https://codecov.io/github/VectorInstitute/eval-agents)
+[![GitHub License](https://img.shields.io/github/license/VectorInstitute/eval-agents)](https://img.shields.io/github/license/VectorInstitute/eval-agents)
+
 This is a collection of reference implementations for Vector Institute's **Agentic AI Evaluation Bootcamp**.
 
 ## Reference Implementations
