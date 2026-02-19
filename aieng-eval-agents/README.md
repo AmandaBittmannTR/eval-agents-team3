@@ -1,7 +1,7 @@
 # aieng-eval-agents
 
 [![PyPI](https://img.shields.io/pypi/v/aieng-eval-agents)](https://pypi.org/project/aieng-eval-agents/)
-[![Python](https://img.shields.io/pypi/pyversions/aieng-eval-agents)](https://pypi.org/project/aieng-eval-agents/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/aieng-eval-agents/)
 [![License](https://img.shields.io/github/license/VectorInstitute/eval-agents)](https://github.com/VectorInstitute/eval-agents/blob/main/LICENSE)
 
 Shared library for Vector Institute's Agentic AI Evaluation Bootcamp. Provides reusable components for building, running, and evaluating LLM agents with [Google ADK](https://google.github.io/adk-docs/) and [Langfuse](https://langfuse.com/).
