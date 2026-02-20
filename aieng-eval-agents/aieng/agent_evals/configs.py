@@ -138,7 +138,7 @@ class Configs(BaseSettings):
     )
     langfuse_host: str = Field(
         default="https://us.cloud.langfuse.com",
-        validation_alias="LANGFUSE_BASE_URL",
+        validation_alias="LANGFUSE_HOST",
         description="Langfuse base URL.",
     )
 
