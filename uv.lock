@@ -112,7 +112,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "aieng-platform-onboard", specifier = ">=0.5.3" },
+    { name = "aieng-platform-onboard", specifier = ">=0.5.4" },
     { name = "codecov", specifier = ">=2.1.13" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "ipython", specifier = ">=9.8.0" },
@@ -219,7 +219,7 @@ dev = [
 
 [[package]]
 name = "aieng-platform-onboard"
-version = "0.5.3"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "authlib" },
@@ -239,9 +239,9 @@ dependencies = [
     { name = "virtualenv" },
     { name = "weaviate-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/dc/495703aaa6a37d945e8e79a8db942fd6d3124af68abf333ef5de2bc48b69/aieng_platform_onboard-0.5.3.tar.gz", hash = "sha256:131627f49d0d5c584bd41302995ec17e7ef967622e042323f5538f8ec526f72e", size = 35197 }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/ec/4cb3086a4d65c488467a7d8b76054e28244379b5ea121075014591de499b/aieng_platform_onboard-0.5.4.tar.gz", hash = "sha256:7c69c6d663d77a2cbe2fd150c100453291d02cf14c5e915c26e94ca0eaf6e3c1", size = 35187 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/84/8bdae45939e5433cdf901521efad477a5f8489020b667299baf0bedb0fc4/aieng_platform_onboard-0.5.3-py3-none-any.whl", hash = "sha256:aeb95c1442b927c651487540fc8fe5209f6a1c266046c9dc89d34d5ae96610a1", size = 42577 },
+    { url = "https://files.pythonhosted.org/packages/98/30/db48192add0681bef6d72d4ff5fcf133c1d6fb31c1b2201b9e2978fd86f6/aieng_platform_onboard-0.5.4-py3-none-any.whl", hash = "sha256:aa4996150d2fa59cee0da0e122b8686af58e65f2a79e75db92a21a95a77c39fb", size = 42562 },
 ]
 
 [[package]]
