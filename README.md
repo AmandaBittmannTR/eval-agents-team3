@@ -11,7 +11,10 @@ This is a collection of reference implementations for Vector Institute's **Agent
 
 ## Reference Implementations
 
-This repository includes three modules, each demonstrating a different aspect of building and evaluating agent-based systems:
+This repository includes four modules, each demonstrating a different aspect of building and evaluating agent-based systems:
+
+- **[Basics](implementations/basics/README.md)**
+  Two introductory notebooks covering agent evaluation fundamentals: why evals are hard, the four quality dimensions, grader types, and a hands-on walkthrough of the shared evaluation harness with Langfuse.
 
 - **[Knowledge-Grounded QA Agent](implementations/knowledge_qa/README.md)**
   A ReAct agent using Google ADK and Google Search to answer questions grounded in live web content. Evaluated on the DeepSearchQA benchmark using LLM-as-a-judge metrics.
