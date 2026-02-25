@@ -36,6 +36,12 @@ Run integration tests to validate that your API keys are set up correctly.
 uv run --env-file .env pytest -sv tests/tool_tests/test_integration.py
 ```
 
+> **Note:** If your `.env` file is incomplete or needs to be updated, you can re-run onboarding manually from inside your Coder workspace (from the repo root):
+>
+> ```bash
+> onboard --bootcamp-name "agentic-ai-evaluation-bootcamp" --output-dir "." --test-script "./aieng-eval-agents/tests/test_integration.py" --env-example "./.env.example" --test-marker "integration_test" --force
+> ```
+
 ## Running the Implementations
 
 For "Gradio App" reference implementations, running the script would print out a "public URL" ending in `gradio.live` (might take a few seconds to appear.) To access the gradio app with the full streaming capabilities, copy and paste this `gradio.live` URL into a new browser tab.
