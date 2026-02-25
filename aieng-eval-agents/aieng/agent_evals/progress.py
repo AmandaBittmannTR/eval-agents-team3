@@ -7,6 +7,7 @@ workflows across the repository.
 from collections.abc import Iterable, Iterator
 from typing import TypeVar
 
+from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
 
@@ -42,6 +43,7 @@ def create_progress(*, transient: bool = False) -> Progress:
         TimeRemainingColumn(),
         TimeElapsedColumn(),
         transient=transient,
+        console=Console(force_jupyter=False),
     )
 
 
