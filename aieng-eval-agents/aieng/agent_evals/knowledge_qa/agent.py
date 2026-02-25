@@ -7,7 +7,6 @@ tool calls.
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 import warnings
@@ -235,10 +234,6 @@ class KnowledgeGroundedAgent:
         thinking_config = None
         if thinking_budget > 0 and self._supports_thinking(self.model):
             thinking_config = types.ThinkingConfig(thinking_budget=thinking_budget)
-
-        # Google ADK reads GOOGLE_API_KEY from the environment directly.
-        # Bridge from OPENAI_API_KEY (or GEMINI_API_KEY) if not already set.
-        os.environ.setdefault("GOOGLE_API_KEY", config.openai_api_key.get_secret_value())
 
         self._agent = Agent(
             name="knowledge_qa",
