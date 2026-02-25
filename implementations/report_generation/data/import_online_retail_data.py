@@ -64,8 +64,9 @@ def import_online_retail_data(dataset_path: str) -> None:
 
     logger.info(f"Importing dataset from {dataset_path} to database at {db_path}")
 
-    df = pd.read_csv(dataset_path)
-    df["InvoiceDate"] = df["InvoiceDate"].apply(convert_date)
+    df = pd.read_excel(dataset_path)
+    # Excel already parses dates as Timestamps, just format them as strings for the TEXT column
+    df["InvoiceDate"] = df["InvoiceDate"].dt.strftime("%Y-%m-%d %H:%M")
     df.to_sql("sales", conn, if_exists="append", index=False)
 
     conn.close()
