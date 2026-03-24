@@ -1,6 +1,7 @@
 """Entity extraction agent.
 
-This module defines the factory used to build the entity extraction agent.
+This module defines the factory used to build the entity extraction agent,
+and ``run_entity_extraction`` for one-shot async execution (e.g. CLI).
 
 The returned agent is a Google ADK ``LlmAgent`` configured to:
 
@@ -16,9 +17,15 @@ Examples
 'EntityExtractionAgent'
 """
 
+import json
+import uuid
+
 from aieng.agent_evals.configs import Configs
 from aieng.agent_evals.entity_extraction.entity_extraction_models import EntityExtractionOutput
 from google.adk.agents import LlmAgent
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
 from google.genai.types import GenerateContentConfig, ThinkingConfig
 
 
@@ -43,9 +50,6 @@ You will receive a JSON object with two fields:
 ### mentioned_companies
 - List the **ticker symbols** of every company that is explicitly mentioned \
   in the text or whose ticker symbol appears directly in the text.
-- Only include ticker symbols that are **stated in or directly inferable from \
-  the text**. Do not look up or guess ticker symbols that are not present.
-- Return an empty list if no ticker symbols are mentioned.
 
 ### named_entities
 For every named entity found in the title or maintext, produce an object with:
@@ -122,3 +126,36 @@ def create_entity_extraction_agent(
         ),
         output_schema=EntityExtractionOutput,
     )
+
+
+async def run_entity_extraction(title: str, maintext: str) -> EntityExtractionOutput:
+    """Run the entity extraction agent on one article and return structured output."""
+    agent = create_entity_extraction_agent()
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app_name=agent.name,
+        agent=agent,
+        session_service=session_service,
+        auto_create_session=True,
+    )
+    try:
+        payload = json.dumps({"title": title, "maintext": maintext}, ensure_ascii=False)
+        message = types.Content(parts=[types.Part(text=payload)], role="user")
+        final_text: str | None = None
+        async for event in runner.run_async(
+            session_id=str(uuid.uuid4()),
+            user_id="entity_extraction",
+            new_message=message,
+        ):
+            if event.is_final_response() and event.content and event.content.parts:
+                final_text = "".join(part.text or "" for part in event.content.parts if part.text)
+
+        if not final_text:
+            raise RuntimeError("Entity extraction produced no output.")
+
+        try:
+            return EntityExtractionOutput.model_validate_json(final_text.strip())
+        except Exception:
+            return EntityExtractionOutput.model_validate(json.loads(final_text))
+    finally:
+        await runner.close()

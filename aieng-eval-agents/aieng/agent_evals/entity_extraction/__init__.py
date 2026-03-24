@@ -15,7 +15,7 @@ Example
 """
 
 from .agent import create_entity_extraction_agent
-from .data import EntityExtractionOutput, NamedEntity
+from .entity_extraction_models import EntityExtractionOutput, NamedEntity
 
 __all__ = [
     "create_entity_extraction_agent",
