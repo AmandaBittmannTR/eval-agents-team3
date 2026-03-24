@@ -34,20 +34,32 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+def _env_key_nonempty(name: str) -> bool:
+    return bool(os.environ.get(name, "").strip())
+
+
 def ensure_google_genai_env() -> None:
     """Mirror API keys from ``Configs`` into ``os.environ`` for ADK / google-genai.
 
-    ``pydantic-settings`` reads ``.env`` into ``Configs``, but the Google client
-    libraries resolve credentials from ``os.environ`` (typically ``GOOGLE_API_KEY``
-    or ``GEMINI_API_KEY``). Without this, runs fail with "Missing key inputs
-    argument" even when ``OPENAI_API_KEY`` or ``GEMINI_API_KEY`` is set in ``.env``.
+    ``google.genai`` uses ``GOOGLE_API_KEY`` or ``GEMINI_API_KEY`` from
+    ``os.environ`` (see ``get_env_api_key()`` in the SDK). Values must be
+    non-empty: ``""`` counts as missing.
+
+    ``pydantic-settings`` can load a key from ``OPENAI_API_KEY`` into ``Configs``
+    while leaving ``GOOGLE_API_KEY`` unset. Also, ``.env`` lines like
+    ``GOOGLE_API_KEY=`` set an empty string; ``setdefault`` does not override those,
+    which produced "Missing key inputs argument" even when another var had the key.
     """
     from aieng.agent_evals.configs import Configs
 
     cfg = Configs()  # type: ignore[call-arg]
-    key = cfg.openai_api_key.get_secret_value()
-    os.environ.setdefault("GOOGLE_API_KEY", key)
-    os.environ.setdefault("GEMINI_API_KEY", key)
+    key = cfg.openai_api_key.get_secret_value().strip()
+    if not key:
+        return
+    if not _env_key_nonempty("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = key
+    if not _env_key_nonempty("GEMINI_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = key
 
 
 DEFAULT_DATA_FILE = "data/transformed_data/2017_data.csv"
