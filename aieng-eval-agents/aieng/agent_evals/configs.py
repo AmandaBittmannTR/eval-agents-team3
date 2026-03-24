@@ -4,9 +4,9 @@ This module provides centralized configuration management using Pydantic setting
 supporting environment variables and .env file loading.
 """
 
-from typing import Any
+from typing import Any, Self
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine.url import URL
 
@@ -75,6 +75,7 @@ class Configs(BaseSettings):
         env_file_encoding="utf-8",
         env_ignore_empty=True,
         env_nested_delimiter="__",
+        extra="ignore",
     )
 
     aml_db: DatabaseConfig | None = Field(
@@ -96,9 +97,13 @@ class Configs(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
         description="API key for OpenAI-compatible API (accepts OPENAI_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY).",
     )
-    google_api_key: SecretStr = Field(
+    google_api_key: SecretStr | None = Field(
+        default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-        description="API key for Google/Gemini API (accepts GEMINI_API_KEY or GOOGLE_API_KEY).",
+        description=(
+            "API key for Google/Gemini API (accepts GEMINI_API_KEY or GOOGLE_API_KEY). "
+            "If unset, falls back to openai_api_key so a single OPENAI_API_KEY or GEMINI_API_KEY works."
+        ),
     )
     default_planner_model: str = Field(
         default="gemini-2.5-pro",
@@ -181,6 +186,18 @@ class Configs(BaseSettings):
         default=None,
         description="Path to the directory where the report generation agent will save the reports.",
     )
+
+    @model_validator(mode="after")
+    def sync_google_api_key_from_openai(self) -> Self:
+        """Mirror openai_api_key into google_api_key when the latter is unset.
+
+        pydantic-settings assigns each environment variable to at most one field.
+        If only ``OPENAI_API_KEY`` is set, ``openai_api_key`` is populated but
+        ``google_api_key`` would stay empty without this step.
+        """
+        if self.google_api_key is None:
+            object.__setattr__(self, "google_api_key", self.openai_api_key)
+        return self
 
     # Validators for the SecretStr fields
     @field_validator("langfuse_secret_key")
