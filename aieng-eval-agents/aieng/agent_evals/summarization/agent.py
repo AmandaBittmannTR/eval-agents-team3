@@ -148,6 +148,13 @@ class SummarizationAgent:
         """Reset agent state between articles.
 
         Clears session history to ensure clean execution for each new article.
+
+        Notes
+        -----
+        This replaces the ADK ``Runner`` without awaiting ``Runner.close()`` on the
+        previous instance, which can leak HTTP clients. In batch/async workflows,
+        prefer a unique ``session_id`` per call to ``summarize_async`` and call
+        ``await aclose()`` when finished, instead of calling ``reset()`` repeatedly.
         """
         self._sessions.clear()
         self._session_service = InMemorySessionService()
@@ -168,6 +175,10 @@ class SummarizationAgent:
     def token_tracker(self) -> TokenTracker:
         """Get the token tracker for context usage monitoring."""
         return self._token_tracker
+
+    async def aclose(self) -> None:
+        """Release the ADK runner (HTTP clients, background tasks)."""
+        await self._runner.close()
 
     async def _get_or_create_session_async(self, session_id: str | None = None) -> str:
         """Get or create an ADK session for the given session ID."""
