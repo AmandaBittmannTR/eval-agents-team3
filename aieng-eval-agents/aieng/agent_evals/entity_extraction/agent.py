@@ -17,7 +17,7 @@ Examples
 """
 
 from aieng.agent_evals.configs import Configs
-from aieng.agent_evals.entity_extraction.data import EntityExtractionOutput
+from aieng.agent_evals.entity_extraction.entity_extraction_models import EntityExtractionOutput
 from google.adk.agents import LlmAgent
 from google.genai.types import GenerateContentConfig, ThinkingConfig
 
