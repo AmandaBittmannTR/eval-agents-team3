@@ -30,6 +30,10 @@ from typing import Any
 import pandas as pd
 from aieng.agent_evals.configs import Configs
 from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
+from aieng.agent_evals.entity_extraction.agent import (
+    _final_response_text_from_event,
+    _parse_entity_output,
+)
 from aieng.agent_evals.evaluation.trace import flush_traces
 from aieng.agent_evals.langfuse import init_tracing
 from aieng.agent_evals.summarization import SummarizationAgent
@@ -286,54 +290,104 @@ async def run_entity_extraction(
     session_service = InMemorySessionService()
     runner = Runner(app_name="entity_extraction", agent=agent, session_service=session_service)
 
+    max_retries = 2
     results: list[EntityExtractionResult] = []
     try:
         for i, article in enumerate(articles):
             start = time.time()
             try:
-                session = await session_service.create_session(
-                    app_name="entity_extraction", user_id="workflow", state={}
+                prompt = json.dumps(
+                    {"title": article.title, "maintext": article.maintext}
                 )
-                prompt = json.dumps({"title": article.title, "maintext": article.maintext})
-                content = types.Content(role="user", parts=[types.Part(text=prompt)])
+                content = types.Content(
+                    role="user", parts=[types.Part(text=prompt)]
+                )
 
-                final_text = ""
-                async for event in runner.run_async(
-                    user_id="workflow", session_id=session.id, new_message=content
-                ):
-                    if hasattr(event, "is_final_response") and event.is_final_response():
-                        if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
-                            for part in event.content.parts:
-                                if not getattr(part, "thought", False) and hasattr(part, "text") and part.text:
-                                    final_text = part.text
+                output: EntityExtractionOutput | None = None
+                last_err: Exception | None = None
+
+                for attempt in range(1, max_retries + 1):
+                    session = await session_service.create_session(
+                        app_name="entity_extraction",
+                        user_id="workflow",
+                        state={},
+                    )
+                    final_text: str | None = None
+                    async for event in runner.run_async(
+                        user_id="workflow",
+                        session_id=session.id,
+                        new_message=content,
+                    ):
+                        if (
+                            hasattr(event, "is_final_response")
+                            and event.is_final_response()
+                        ):
+                            chunk = _final_response_text_from_event(event)
+                            if chunk:
+                                final_text = chunk
+
+                    if not final_text or not final_text.strip():
+                        last_err = ValueError(
+                            "Entity extraction produced no output."
+                        )
+                        if attempt < max_retries:
+                            logger.warning(
+                                "Article %d: empty response on attempt %d, retrying…",
+                                i, attempt,
+                            )
+                            continue
+                        break
+
+                    try:
+                        output = _parse_entity_output(final_text)
+                        break
+                    except Exception as parse_err:
+                        last_err = parse_err
+                        if attempt < max_retries:
+                            logger.warning(
+                                "Article %d: parse failed on attempt %d (%s), retrying…",
+                                i, attempt, parse_err,
+                            )
+                            continue
 
                 duration_ms = int((time.time() - start) * 1000)
 
-                output: EntityExtractionOutput | None = None
-                if final_text.strip():
-                    try:
-                        output = EntityExtractionOutput.model_validate_json(final_text.strip())
-                    except Exception:
-                        output = EntityExtractionOutput.model_validate(json.loads(final_text.strip()))
+                if output is None and last_err is not None:
+                    raise last_err
 
                 results.append(
                     EntityExtractionResult(
                         article_index=i,
-                        mentioned_companies=output.mentioned_companies if output else [],
-                        named_entities=[e.model_dump() for e in output.named_entities] if output else [],
+                        mentioned_companies=(
+                            output.mentioned_companies if output else []
+                        ),
+                        named_entities=(
+                            [e.model_dump() for e in output.named_entities]
+                            if output else []
+                        ),
                         duration_ms=duration_ms,
                     )
                 )
                 console.print(
-                    f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({duration_ms}ms)"
+                    f"  [green]Entity extraction[/green] article "
+                    f"{i + 1}/{len(articles)} ({duration_ms}ms)"
                 )
             except Exception as exc:
                 duration_ms = int((time.time() - start) * 1000)
-                logger.error(f"Entity extraction failed for article {i}: {exc}")
-                results.append(
-                    EntityExtractionResult(article_index=i, duration_ms=duration_ms, error=str(exc))
+                logger.error(
+                    "Entity extraction failed for article %d: %s", i, exc,
                 )
-                console.print(f"  [red]Entity extraction[/red] article {i + 1}/{len(articles)} FAILED: {exc}")
+                results.append(
+                    EntityExtractionResult(
+                        article_index=i,
+                        duration_ms=duration_ms,
+                        error=str(exc),
+                    )
+                )
+                console.print(
+                    f"  [red]Entity extraction[/red] article "
+                    f"{i + 1}/{len(articles)} FAILED: {exc}"
+                )
     finally:
         await runner.close()
 
