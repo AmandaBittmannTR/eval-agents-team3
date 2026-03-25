@@ -257,11 +257,18 @@ async def run_entity_extraction_batch(
                 out = {"mentioned_companies": [], "named_entities": []}
             counter["done"] += 1
             logger.info("Extracted [%s/%s] %s", counter["done"], total, article_id)
+            results[article_id] = out
             return article_id, out
 
     tasks = [_process(row) for row in articles]
-    for article_id, output in await asyncio.gather(*tasks):
-        results[article_id] = output
+    try:
+        await asyncio.gather(*tasks)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.warning(
+            "Batch interrupted after %d/%d articles. Returning partial results.",
+            len(results),
+            total,
+        )
 
     return results
 
@@ -637,58 +644,84 @@ def main(argv: list[str] | None = None) -> int:
         len(article_rows),
         args.concurrency,
     )
-    agent_outputs = asyncio.run(
-        run_entity_extraction_batch(article_rows, concurrency=args.concurrency),
-    )
 
-    if not agent_outputs:
-        logger.error("No outputs produced (empty dataset after offset/limit or all calls failed).")
-        return 1
+    agent_outputs: dict[str, dict[str, Any]] = {}
+    interrupted = False
+    try:
+        agent_outputs = asyncio.run(
+            run_entity_extraction_batch(article_rows, concurrency=args.concurrency),
+        )
+    except KeyboardInterrupt:
+        logger.warning("Interrupted! Writing partial results...")
+        interrupted = True
+    except Exception:
+        logger.exception("Batch extraction failed. Writing partial results...")
+        interrupted = True
 
-    ground = ground_truth_from_article_rows(article_rows)
-    per_item, aggregates = run_eval(ground, agent_outputs)
+    def _report_results() -> int:
+        """Evaluate whatever outputs we have and write results to console/Langfuse."""
+        if not agent_outputs:
+            logger.error(
+                "No outputs produced (empty dataset after offset/limit or all calls failed).",
+            )
+            return 1
 
-    if not per_item:
-        logger.error("No rows matched between agent outputs and ground-truth data.")
-        return 1
+        ground = ground_truth_from_article_rows(article_rows)
+        per_item, aggregates = run_eval(ground, agent_outputs)
 
-    if not args.quiet:
-        for row in per_item:
-            aid = row["article_id"]
-            label = aid if len(aid) <= 50 else f"{aid[:47]}..."
-            print(
-                f"{label}\t"
-                f"co_f1={row['companies_f1']:.4f}\t"
-                f"ent_f1={row['entities_f1']:.4f}\t"
-                f"ent_rel_f1={row['entities_relaxed_f1']:.4f}\t"
-                f"word_f1={row['word_f1']:.4f}",
+        if not per_item:
+            logger.error("No rows matched between agent outputs and ground-truth data.")
+            return 1
+
+        if interrupted:
+            aggregates["partial_run"] = True
+            aggregates["articles_completed"] = float(len(agent_outputs))
+            aggregates["articles_requested"] = float(len(article_rows))
+
+        if not args.quiet:
+            for row in per_item:
+                aid = row["article_id"]
+                label = aid if len(aid) <= 50 else f"{aid[:47]}..."
+                print(
+                    f"{label}\t"
+                    f"co_f1={row['companies_f1']:.4f}\t"
+                    f"ent_f1={row['entities_f1']:.4f}\t"
+                    f"ent_rel_f1={row['entities_relaxed_f1']:.4f}\t"
+                    f"word_f1={row['word_f1']:.4f}",
+                )
+
+        print(json.dumps(aggregates, indent=2))
+
+        if args.per_item_json:
+            out_path = (
+                args.per_item_json
+                if args.per_item_json.is_absolute()
+                else repo_root / args.per_item_json
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("w", encoding="utf-8") as f:
+                for row in per_item:
+                    f.write(json.dumps(row) + "\n")
+            logger.info("Per-item scores written to %s", out_path)
+
+        if args.langfuse:
+            push_entity_extraction_eval_to_langfuse(
+                rows=per_item,
+                aggregates=aggregates,
+                ground=ground,
+                agent_outputs=agent_outputs,
+                run_metadata={
+                    "data_path": str(data_path),
+                    "offset": args.offset,
+                    "limit": None if args.all else args.limit,
+                    "all": args.all,
+                    "interrupted": interrupted,
+                },
             )
 
-    print(json.dumps(aggregates, indent=2))
+        return 1 if interrupted else 0
 
-    if args.per_item_json:
-        out_path = args.per_item_json if args.per_item_json.is_absolute() else repo_root / args.per_item_json
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as f:
-            for row in per_item:
-                f.write(json.dumps(row) + "\n")
-        logger.info("Per-item scores written to %s", out_path)
-
-    if args.langfuse:
-        push_entity_extraction_eval_to_langfuse(
-            rows=per_item,
-            aggregates=aggregates,
-            ground=ground,
-            agent_outputs=agent_outputs,
-            run_metadata={
-                "data_path": str(data_path),
-                "offset": args.offset,
-                "limit": None if args.all else args.limit,
-                "all": args.all,
-            },
-        )
-
-    return 0
+    return _report_results()
 
 
 if __name__ == "__main__":
