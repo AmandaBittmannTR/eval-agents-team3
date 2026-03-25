@@ -8,9 +8,10 @@ The returned agent is a Google ADK ``LlmAgent`` configured to:
 - Accept article text (title + maintext) as input.
 - Extract named entities and mentioned companies.
 - Use Google Search when needed to resolve ticker symbols for company names.
-- Emit JSON parsed and validated as ``EntityExtractionOutput`` (no ADK
-  ``output_schema`` alongside tools: nested Pydantic schemas use JSON Schema
-  ``$ref``/``$defs``, which Google's tool declaration format does not accept).
+- Enforce structured JSON via prompt-embedded schema with an explicit example
+  and field rules (neither ADK ``output_schema`` nor
+  ``response_mime_type="application/json"`` can be used alongside tools in the
+  current Gemini API). Post-hoc parsing fallbacks are retained as a safety net.
 
 Examples
 --------
@@ -21,6 +22,7 @@ Examples
 """
 
 import json
+import logging
 import re
 import uuid
 
@@ -33,6 +35,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from google.genai.types import GenerateContentConfig, ThinkingConfig
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_AGENT_DESCRIPTION = (
     "Extracts named entities and mentioned companies from article text."
@@ -40,9 +43,7 @@ _DEFAULT_AGENT_DESCRIPTION = (
 
 EXTRACTION_PROMPT = """\
 You are a named-entity extraction specialist. Your task is to read the provided \
-article (title + maintext) and extract every named entity, as well as any \
-company ticker symbols that are explicitly mentioned or clearly identifiable \
-from the text.
+article (title + maintext) and extract named entities and company ticker symbols.
 
 ## Input
 
@@ -50,57 +51,131 @@ You will receive a JSON object with two fields:
 - `title`: the article headline.
 - `maintext`: the full article body.
 
-## Extraction Rules
+## Entity Group Classification Rules
 
-### mentioned_companies
-- List the **ticker symbols** of every company that is explicitly mentioned \
-  in the text, whose ticker symbol appears directly in the text, or whose ticker \
-  you resolve using ``google_search`` as described below.
+You MUST follow these classification rules exactly:
 
-### Tool: google_search (required for tradable companies)
-- You **must** call ``google_search(query)`` at least once for each **distinct** \
-  ``ORG`` that names a **publicly traded company or major consumer brand** when \
-  the article does **not** already state its ticker. Do **not** skip search for \
-  brands like device makers, streaming services, or tech platforms (e.g. Fitbit, \
-  Apple, Beats, Pandora, MarketWatch) unless you already have a correct ticker \
-  from the article text.
-- **Skip** search for obvious non‑issuers: universities, labs, academic journals, \
-  cities, courts, regulators, and individual people (even if ``ORG``-like titles).
-- Each query should be focused, e.g. ``"{company name}" stock ticker`` or \
-  ``"{company name}" NYSE NASDAQ symbol``.
-- Use the ``summary`` (and titles in ``sources``) to pick **one** ticker; add it \
-  to ``mentioned_companies`` and set ``normalized`` on that entity’s row only \
-  when results clearly support a single symbol. If ambiguous or not listed, \
-  leave ``normalized`` null—**do not** invent one‑letter symbols from the \
-  company’s initial (e.g. do not map “Pandora” to ``P`` without clear evidence).
-- ``normalized`` may come from the article **or** from search results; both are \
-  allowed.
+### ORG -- publicly traded companies ONLY
+- Use `ORG` **exclusively** for well-known publicly traded companies \
+(e.g. Apple, Google, Amazon, Netflix, Verizon, Wells Fargo) and for \
+ticker symbols that appear literally in the text (e.g. AAPL, GOOG, VZ).
+- Do **NOT** classify the following as `ORG`: universities, research labs, \
+academic journals, courts, government bodies, regulatory agencies, private \
+companies, or consumer brands that are not major publicly traded companies.
 
-### named_entities
-For every named entity found in the title or maintext, produce an object with:
+### PER -- named individuals
+- Use `PER` for named people (e.g. "Tim Cook", "Colin Camerer", "Trump").
+
+### LOC -- countries and major cities only
+- Use `LOC` for countries (e.g. "Canada", "America") and major cities \
+(e.g. "New York", "San Francisco", "Louisville", "Miami").
+- Do **NOT** use `LOC` for U.S. state names, continents, or regions. \
+Classify those as `MISC` instead (e.g. "Florida" -> MISC, "Alabama" -> MISC).
+
+### MISC -- everything else
+- `MISC` is the default category for all other named entities, including:
+  - Product names (iPhone, Apple Watch Series 2, MacBook Pro)
+  - Technology and platform names (Bluetooth, Android, iOS, Snapchat)
+  - Consumer brands that are not major publicly traded companies \
+(Kickstarter, Beats, Parkside)
+  - Nationalities and demonyms (Chinese, American, Democratic)
+  - U.S. state names and regions (Florida, Alabama, Silicon Valley)
+  - Any other proper noun that does not fit ORG, PER, or LOC
+
+## Extraction Scope
+
+Extract only clearly identifiable named entities. **Skip** the following:
+- Universities, research labs, and academic institutions
+- Courts, government agencies, and regulatory bodies
+- Academic journals and publications
+- Generic descriptors, adjectives, dates, and fragmentary text
+- Color names, model numbers in isolation, and minor references
+
+Focus on: publicly traded companies, named individuals, key geographic \
+references, and prominent product/brand/technology names.
+
+## mentioned_companies
+
+- List the **ticker symbols** only for entities you classified as `ORG`.
+- Include a ticker if it appears explicitly in the article text (e.g. in \
+parentheses like ``(AAPL)``), or if you resolve it via ``google_search``.
+- Only include tickers for companies that are well-known and clearly \
+identifiable as publicly traded.
+
+## Tool-Calling Protocol (google_search)
+
+Follow these steps **in order**:
+
+1. **Scan** the article and identify every distinct `ORG` entity (publicly \
+traded companies only, per the rules above).
+2. **For each ORG whose ticker does NOT already appear in the article text**, \
+call ``google_search(query)`` to resolve its ticker.
+3. **After ALL searches are complete**, produce your final JSON output.
+
+### Query format examples
+- ``"Apple Inc" stock ticker symbol`` -> expect AAPL
+- ``"Wells Fargo" NYSE ticker`` -> expect WFC
+- ``"Netflix" NASDAQ ticker symbol`` -> expect NFLX
+
+### Interpreting search results
+- Use the ``summary`` and ``sources`` titles to identify **one** unambiguous \
+ticker symbol.
+- If the results are ambiguous or the company is not publicly listed, set \
+``normalized`` to ``null`` and do NOT add it to ``mentioned_companies``.
+- Do **NOT** invent ticker symbols.
+
+### Do NOT search for
+- Universities, research labs, academic journals
+- Cities, countries, geographic regions
+- Courts, regulators, government agencies
+- Individual people
+- Consumer brands that are not major publicly traded companies
+
+### Critical constraints
+- Complete ALL ``google_search`` calls BEFORE producing your final JSON.
+- Do NOT output partial JSON between tool calls.
+
+## named_entities format
+
+For each entity, produce an object with:
 
 | Field          | Description |
 |----------------|-------------|
-| `entity_group` | One of `ORG` (organisation), `PER` (person), `LOC` (location), `MISC` (miscellaneous). |
+| `entity_group` | One of `ORG`, `PER`, `LOC`, `MISC` per the rules above. |
 | `word`         | The entity text **exactly as it appears** in the source. |
-| `normalized`   | Ticker or canonical form from the **article text** or **verified via** ``google_search``. Use `null` when unknown or not a listed company. |
+| `normalized`   | Ticker symbol for `ORG` entities (from text or search). Use `null` for all other entities. |
 
-### Guidelines
-- Extract **all** entities, not just the most prominent ones.
-- Preserve the original surface form in `word`; do not alter capitalisation or spelling.
-- Classify courts, government bodies, and regulatory agencies as `ORG`.
-- Classify countries, cities, continents, and regions as `LOC`.
+### Additional guidelines
+- Preserve the original surface form in `word`; do not alter capitalisation.
 - When the same entity appears multiple times, include it **only once**.
 - Do not fabricate entities that are not in the text.
 
 ## Output
-After you finish any ``google_search`` calls, respond with **only** a single JSON \
-object and no other prose or markdown. Shape:
 
-- ``mentioned_companies``: array of strings (ticker symbols).
-- ``named_entities``: array of objects, each with ``entity_group`` (``ORG``, \
-  ``PER``, ``LOC``, or ``MISC``), ``word`` (string), and ``normalized`` \
-  (string or null).
+Your final response must be a **single JSON object** with exactly this structure \
+(no other prose, markdown fences, or commentary):
+
+```
+{
+  "mentioned_companies": ["AAPL", "GOOGL"],
+  "named_entities": [
+    {"entity_group": "ORG", "word": "Apple", "normalized": "AAPL"},
+    {"entity_group": "ORG", "word": "AAPL", "normalized": "AAPL"},
+    {"entity_group": "PER", "word": "Tim Cook", "normalized": null},
+    {"entity_group": "LOC", "word": "New York", "normalized": null},
+    {"entity_group": "MISC", "word": "iPhone", "normalized": null},
+    {"entity_group": "MISC", "word": "Florida", "normalized": null},
+    {"entity_group": "MISC", "word": "American", "normalized": null}
+  ]
+}
+```
+
+Field rules:
+- ``mentioned_companies``: array of strings (ticker symbols for ORG entities only).
+- ``named_entities``: array of objects, each with:
+  - ``entity_group``: one of ``"ORG"``, ``"PER"``, ``"LOC"``, ``"MISC"`` (no other values).
+  - ``word``: string, exact surface form from the article.
+  - ``normalized``: string (ticker symbol) for ORG entities, or ``null`` for all others.
 """
 
 
@@ -133,8 +208,9 @@ def create_entity_extraction_agent(
     Returns
     -------
     LlmAgent
-        Configured entity extraction agent with Google Search. Final JSON is
-        validated by ``run_entity_extraction`` into ``EntityExtractionOutput``.
+        Configured entity extraction agent with Google Search. JSON structure
+        is enforced via prompt-embedded schema and example. Post-hoc parsing
+        fallbacks in ``run_entity_extraction`` provide defence-in-depth.
     """
     config = Configs()  # type: ignore[call-arg]
     search_tool = create_google_search_tool(config)
@@ -164,6 +240,7 @@ def _coerce_final_json_text(raw: str) -> str:
     text = raw.strip()
     fence = re.match(r"^```(?:json)?\s*\r?\n?(.*)\r?\n?```\s*$", text, re.DOTALL | re.IGNORECASE)
     if fence:
+        logger.warning("Model output contained markdown fences despite JSON enforcement.")
         return fence.group(1).strip()
     return text
 
@@ -184,7 +261,7 @@ def _final_response_text_from_event(event: object) -> str | None:
 
 
 def _first_json_object_slice(text: str) -> str | None:
-    """If the model wrapped JSON in prose, return the first balanced `{...}` substring."""
+    """If the model wrapped JSON in prose, return the first balanced ``{...}`` substring."""
     start = text.find("{")
     if start < 0:
         return None
@@ -214,7 +291,12 @@ def _first_json_object_slice(text: str) -> str | None:
 
 
 def _parse_entity_output(raw: str) -> EntityExtractionOutput:
-    """Parse model output into ``EntityExtractionOutput`` with several fallbacks."""
+    """Parse model output into ``EntityExtractionOutput`` with several fallbacks.
+
+    The primary ``model_validate_json`` path should succeed when the model
+    follows the prompt-embedded schema. The subsequent fallbacks are retained
+    as defence-in-depth and emit warnings when they activate.
+    """
     coerced = _coerce_final_json_text(raw)
     if not coerced.strip():
         raise ValueError("Model output is empty after stripping fences.")
@@ -222,15 +304,22 @@ def _parse_entity_output(raw: str) -> EntityExtractionOutput:
     try:
         return EntityExtractionOutput.model_validate_json(coerced)
     except Exception:
-        pass
+        logger.warning(
+            "Primary JSON parse failed; attempting json.loads fallback. "
+            "First 200 chars: %s",
+            coerced[:200],
+        )
 
     try:
         return EntityExtractionOutput.model_validate(json.loads(coerced))
     except Exception:
-        pass
+        logger.warning("json.loads fallback also failed; trying JSON object slice extraction.")
 
     slice_json = _first_json_object_slice(coerced)
     if slice_json:
+        logger.warning(
+            "Fell back to _first_json_object_slice to extract JSON from model output."
+        )
         try:
             return EntityExtractionOutput.model_validate_json(slice_json)
         except Exception:
