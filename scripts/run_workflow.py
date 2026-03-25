@@ -442,11 +442,14 @@ async def _ee_branch(
     articles: list[ArticleRecord],
     *,
     langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
 ) -> list[EntityExtractionResult]:
     """Run entity extraction agent then evaluate immediately."""
     results = await run_entity_extraction(articles, langfuse_tracing=langfuse_tracing)
     if results:
-        run_entity_extraction_evals(results, articles, langfuse=langfuse_tracing)
+        run_entity_extraction_evals(
+            results, articles, langfuse=langfuse_tracing, run_context=run_context,
+        )
     return results
 
 
@@ -454,11 +457,14 @@ async def _sum_branch(
     articles: list[ArticleRecord],
     *,
     langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
 ) -> list[SummarizationResult]:
     """Run summarization agent then evaluate immediately."""
     results = await run_summarization(articles, langfuse_tracing=langfuse_tracing)
     if results:
-        await run_summarization_evals(results, articles, langfuse=langfuse_tracing)
+        await run_summarization_evals(
+            results, articles, langfuse=langfuse_tracing, run_context=run_context,
+        )
     return results
 
 
@@ -477,21 +483,26 @@ async def run_pipeline(
     entity_results: list[EntityExtractionResult] = []
     summarization_results: list[SummarizationResult] = []
 
+    branch_kw: dict[str, Any] = {
+        "langfuse_tracing": langfuse_tracing,
+        "run_context": run_context,
+    }
+
     if sequential:
         if "entity-extraction" in agents_to_run:
-            entity_results = await _ee_branch(articles, langfuse_tracing=langfuse_tracing)
+            entity_results = await _ee_branch(articles, **branch_kw)
         if "summarization" in agents_to_run:
-            summarization_results = await _sum_branch(articles, langfuse_tracing=langfuse_tracing)
+            summarization_results = await _sum_branch(articles, **branch_kw)
         return entity_results, summarization_results
 
     tasks: dict[str, asyncio.Task[Any]] = {}
     if "entity-extraction" in agents_to_run:
         tasks["entity-extraction"] = asyncio.create_task(
-            _ee_branch(articles, langfuse_tracing=langfuse_tracing)
+            _ee_branch(articles, **branch_kw)
         )
     if "summarization" in agents_to_run:
         tasks["summarization"] = asyncio.create_task(
-            _sum_branch(articles, langfuse_tracing=langfuse_tracing)
+            _sum_branch(articles, **branch_kw)
         )
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -623,11 +634,26 @@ async def async_main(args: argparse.Namespace) -> None:
 
     console.print(f"  Loaded {len(articles)} articles")
 
+    # --- Workflow run identity (shared across all Langfuse eval traces) ---
+    workflow_run_id = f"workflow-run-{uuid.uuid4().hex[:12]}"
+    run_context: dict[str, Any] = {
+        "source": "workflow",
+        "run_id": workflow_run_id,
+        "data_source": data_source_label,
+        "agents": args.agents,
+        "mode": "sequential" if args.sequential else "parallel",
+    }
+    console.print(f"  Run ID: {workflow_run_id}")
+
     # --- Run agent pipelines (evaluation happens inside each branch) ---
-    mode = "sequential" if args.sequential else "parallel"
+    mode = run_context["mode"]
     console.print(f"\n[bold]Running agents ({mode}):[/bold] {', '.join(args.agents)}")
     entity_results, summarization_results = await run_pipeline(
-        articles, args.agents, sequential=args.sequential, langfuse_tracing=langfuse_tracing,
+        articles,
+        args.agents,
+        sequential=args.sequential,
+        langfuse_tracing=langfuse_tracing,
+        run_context=run_context,
     )
 
     if langfuse_tracing:

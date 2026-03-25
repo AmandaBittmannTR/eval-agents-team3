@@ -117,6 +117,7 @@ def evaluate_entity_extraction(
     articles: list[Any],
     *,
     langfuse: bool = True,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run P/R/F1 scoring on entity extraction results.
 
@@ -148,12 +149,16 @@ def evaluate_entity_extraction(
     console.print(f"  [dim]{json.dumps(aggregates, indent=2)}[/dim]")
 
     if langfuse:
+        run_metadata: dict[str, Any] = {
+            "n_articles": len(results),
+            **(run_context or {"source": "workflow"}),
+        }
         _ee_eval.push_entity_extraction_eval_to_langfuse(
             rows=per_item,
             aggregates=aggregates,
             ground=ground,
             agent_outputs=agent,
-            run_metadata={"source": "workflow", "n_articles": len(results)},
+            run_metadata=run_metadata,
         )
 
     return {"per_item": per_item, "aggregates": aggregates}
@@ -169,6 +174,7 @@ def evaluate_summarization_similarity(
     articles: list[Any],
     *,
     langfuse: bool = True,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run TF-IDF cosine similarity + BERTScore evaluation on summaries.
 
@@ -203,12 +209,16 @@ def evaluate_summarization_similarity(
     console.print(f"  [dim]{json.dumps(aggregates, indent=2)}[/dim]")
 
     if langfuse:
+        run_metadata: dict[str, Any] = {
+            "n_articles": len(results),
+            **(run_context or {"source": "workflow"}),
+        }
         _sim_eval.push_summary_similarity_eval_to_langfuse(
             rows=rows,
             aggregates=aggregates,
             ground=ground,
             agent_summaries=agent,
-            run_metadata={"source": "workflow", "n_articles": len(results)},
+            run_metadata=run_metadata,
         )
 
     return {"per_item": rows, "aggregates": aggregates}
@@ -224,6 +234,7 @@ async def evaluate_summarization_llm_judge(
     articles: list[Any],
     *,
     langfuse: bool = True,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run LLM-as-a-judge grading on summarization results.
 
@@ -294,12 +305,16 @@ async def evaluate_summarization_llm_judge(
     console.print(f"  [dim]{json.dumps(aggregates, indent=2)}[/dim]")
 
     if langfuse:
+        run_metadata: dict[str, Any] = {
+            "n_articles": len(results),
+            **(run_context or {"source": "workflow"}),
+        }
         _push_llm_judge_eval_to_langfuse(
             rows=per_article,
             aggregates=aggregates,
             articles=articles,
             results=results,
-            run_metadata={"source": "workflow", "n_articles": len(results)},
+            run_metadata=run_metadata,
         )
 
     return {"per_article": per_article, "aggregates": aggregates}
@@ -331,7 +346,12 @@ def _push_llm_judge_eval_to_langfuse(
         logger.exception("Langfuse auth_check failed; skipping upload.")
         return
 
-    session_id = f"llm_judge_eval-{uuid.uuid4().hex[:12]}"
+    session_id = run_metadata.get(
+        "run_id", f"llm_judge_eval-{uuid.uuid4().hex[:12]}"
+    )
+    tags = ["llm_judge_eval", "summarization", "bootcamp"]
+    if run_metadata.get("source") == "workflow":
+        tags.append("Full Workflow Pipeline")
     trace_id_for_url: str | None = None
 
     summary_by_index: dict[int, str] = {}
@@ -348,7 +368,7 @@ def _push_llm_judge_eval_to_langfuse(
             root.update_trace(
                 name="LLM-as-judge summarization eval",
                 session_id=session_id,
-                tags=["llm_judge_eval", "summarization", "bootcamp"],
+                tags=tags,
             )
 
             for row in rows:
@@ -410,6 +430,7 @@ def run_entity_extraction_evals(
     articles: list[Any],
     *,
     langfuse: bool = True,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run all entity extraction evaluations and return results."""
     successful = sum(1 for r in results if r.error is None)
@@ -417,7 +438,9 @@ def run_entity_extraction_evals(
         f"\n[bold cyan]Running Entity Extraction Evaluations[/bold cyan] "
         f"({successful}/{len(results)} successful)"
     )
-    return evaluate_entity_extraction(results, articles, langfuse=langfuse)
+    return evaluate_entity_extraction(
+        results, articles, langfuse=langfuse, run_context=run_context,
+    )
 
 
 async def run_summarization_evals(
@@ -425,6 +448,7 @@ async def run_summarization_evals(
     articles: list[Any],
     *,
     langfuse: bool = True,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run both similarity and LLM-as-judge evaluations on summaries."""
     successful = sum(1 for r in results if r.error is None)
@@ -433,7 +457,11 @@ async def run_summarization_evals(
         f"({successful}/{len(results)} successful)"
     )
 
-    similarity = evaluate_summarization_similarity(results, articles, langfuse=langfuse)
-    llm_judge = await evaluate_summarization_llm_judge(results, articles, langfuse=langfuse)
+    similarity = evaluate_summarization_similarity(
+        results, articles, langfuse=langfuse, run_context=run_context,
+    )
+    llm_judge = await evaluate_summarization_llm_judge(
+        results, articles, langfuse=langfuse, run_context=run_context,
+    )
 
     return {"similarity": similarity, "llm_judge": llm_judge}
