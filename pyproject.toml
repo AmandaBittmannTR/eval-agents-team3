@@ -19,17 +19,19 @@ dependencies = [
     "plotly>=6.5.0",
     "pydantic>=2.12.4",
     "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.0",
     "pydantic-ai-slim[logfire]>=1.26.0",
     "scikit-learn>=1.7.0",
     "urllib3>=2.6.3",
     "openpyxl>=3.1.5",
     "authlib>=1.6.7", # CVE-2026-28802: alg:none JWT bypass fixed in 1.6.7
     "filelock>=3.20.3",
-    "pyasn1>=0.6.2",
+    "pyasn1>=0.6.3", # CVE-2026-30922: DoS via uncontrolled recursion fixed in 0.6.3
     "virtualenv>=20.36.1",
     "tenacity>=9.1.2",
+    "bert-score>=0.3.13",
     "certifi>=2026.1.4",
-    "pypdf>=6.7.5", # CVE-2026-28804: ASCIIHexDecode DoS fixed in 6.7.5
+    "pypdf>=6.9.1", # CVE-2026-28804: ASCIIHexDecode DoS fixed in 6.7.5; CVE-2026-33123: array-based stream DoS fixed in 6.9.1
 ]
 
 [dependency-groups]
@@ -42,7 +44,6 @@ dev = [
     "ipywidgets>=8.1.7",
     "jupyter>=1.1.1",
     "jupyterlab>=4.4.8",
-    "nbqa>=1.9.1",
     "pip>=26.0", # Pinning version to address vulnerability GHSA-6vgw-5pg2-w6jp
     "pip-audit>=2.9.0",
     "pre-commit>=4.2.0",
@@ -50,7 +51,6 @@ dev = [
     "pytest-asyncio>=0.26.0",
     "pytest-cov>=6.1.1",
     "pytest-mock>=3.14.0",
-    "ruff>=0.14.7",
     "transformers>=4.57.3",
     "pandas-stubs>=2.3.3.260113",
 ]
@@ -81,69 +81,6 @@ members = [
 
 [tool.uv.sources]
 aieng-eval-agents = { workspace = true }
-
-[tool.ruff]
-include = ["*.py", "pyproject.toml", "*.ipynb"]
-line-length = 120
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-docstring-code-format = true
-
-[tool.ruff.lint]
-select = [
-    "A", # flake8-builtins
-    "B", # flake8-bugbear
-    "COM", # flake8-commas
-    "C4", # flake8-comprehensions
-    "RET", # flake8-return
-    "SIM", # flake8-simplify
-    "ICN", # flake8-import-conventions
-    "Q", # flake8-quotes
-    "RSE", # flake8-raise
-    "D", # pydocstyle
-    "E", # pycodestyle
-    "F", # pyflakes
-    "I", # isort
-    "W", # pycodestyle
-    "N", # pep8-naming
-    "ERA", # eradicate
-    "PL", # pylint
-]
-fixable = ["A", "B", "COM", "C4", "RET", "SIM", "ICN", "Q", "RSE", "D", "E", "F", "I", "W", "N", "ERA", "PL"]
-ignore = [
-    "B905", # `zip()` without an explicit `strict=` parameter
-    "E501", # line too long
-    "D203", # 1 blank line required before class docstring
-    "D213", # Multi-line docstring summary should start at the second line
-    "PLR2004", # Replace magic number with named constant
-    "PLR0913", # Too many arguments
-    "COM812", # Missing trailing comma
-    "N999", # Number in module names.
-    "ERA001", # Commented out lines.
-]
-
-# Ignore import violations in all `__init__.py` files.
-# Ignore missing docstring in `__init__.py` files
-# Ignore E402 in notebooks (imports not at top) as this is expected
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["E402", "F401", "F403", "F811", "D104"]
-"*.ipynb" = ["E402", "D100", "D103"]
-
-
-
-[tool.ruff.lint.pep8-naming]
-ignore-names = ["X*", "setUp"]
-
-[tool.ruff.lint.isort]
-lines-after-imports = 2
-
-[tool.ruff.lint.pydocstyle]
-convention = "numpy"
-
-[tool.ruff.lint.pycodestyle]
-max-doc-length = 88
 
 [tool.pytest.ini_options]
 markers = [

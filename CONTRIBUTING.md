@@ -19,8 +19,6 @@ For code style, we recommend the [PEP 8 style guide](https://peps.python.org/pep
 
 For docstrings we use [numpy format](https://numpydoc.readthedocs.io/en/latest/format.html).
 
-We use [ruff](https://docs.astral.sh/ruff/) for code formatting and static code
-analysis. Ruff checks various rules including [flake8](https://docs.astral.sh/ruff/faq/#how-does-ruff-compare-to-flake8). The pre-commit hooks show errors which you need to fix before submitting a PR.
-
-Last but not the least, we use type hints in our code which is then checked using
-[mypy](https://mypy.readthedocs.io/en/stable/).
+Pre-commit runs hooks such as trailing-whitespace cleanup, YAML/TOML checks, and
+[mypy](https://mypy.readthedocs.io/en/stable/) for type checking (see
+`.pre-commit-config.yaml`). Use type hints in new code so mypy stays useful.
