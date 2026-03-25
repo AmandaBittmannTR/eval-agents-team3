@@ -24,15 +24,6 @@ repos:
     hooks:
       - id: uv-lock
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.7
-    hooks:
-    - id: ruff-check
-      args: [--fix, --exit-non-zero-on-fix]
-      types_or: [python, jupyter]
-    - id: ruff-format
-      types_or: [python, jupyter]
-
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.19.1
     hooks:
@@ -41,12 +32,6 @@ repos:
       language: system
       types: [python]
       exclude: "tests"
-
-  - repo: https://github.com/nbQA-dev/nbQA
-    rev: 1.9.1
-    hooks:
-    - id: nbqa-ruff
-      args: [--fix, --exit-non-zero-on-fix, "--ignore=D100,F704,PLE1142"]
 
 ci:
     autofix_commit_msg: |
