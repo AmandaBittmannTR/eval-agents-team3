@@ -474,6 +474,7 @@ async def run_pipeline(
     *,
     sequential: bool = False,
     langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
 ) -> tuple[list[EntityExtractionResult], list[SummarizationResult]]:
     """Run selected agent pipelines with immediate evaluation.
 
