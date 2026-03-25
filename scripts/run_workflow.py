@@ -200,80 +200,36 @@ def load_data(path: str, sample_size: int | None = None) -> list[ArticleRecord]:
 
 
 async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExtractionResult]:
-    """Run the entity extraction agent over all articles sequentially.
-
-    Each article gets a fresh ADK session. The agent's ``output_schema`` is
-    ``EntityExtractionOutput``, so the final response is structured JSON that
-    we parse back into fields for the result model.
-    """
-    from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
-    from aieng.agent_evals.token_tracker import TokenTracker
-    from google.adk.runners import Runner
-    from google.adk.sessions import InMemorySessionService
-    from google.genai import types
-
-    agent = create_entity_extraction_agent()
-    session_service = InMemorySessionService()
-    runner = Runner(app_name="entity_extraction", agent=agent, session_service=session_service)
+    """Run the entity extraction agent over all articles sequentially."""
+    from aieng.agent_evals.entity_extraction.agent import run_entity_extraction as _extract
 
     results: list[EntityExtractionResult] = []
-    try:
-        for i, article in enumerate(articles):
-            start = time.time()
-            try:
-                session = await session_service.create_session(
-                    app_name="entity_extraction", user_id="workflow", state={}
+    for i, article in enumerate(articles):
+        try:
+            response = await _extract(article.title, article.maintext)
+            u = response.token_usage
+            results.append(
+                EntityExtractionResult(
+                    article_index=i,
+                    mentioned_companies=response.output.mentioned_companies,
+                    named_entities=[e.model_dump() for e in response.output.named_entities],
+                    duration_ms=response.total_duration_ms,
+                    total_prompt_tokens=u.total_prompt_tokens if u else 0,
+                    total_completion_tokens=u.total_completion_tokens if u else 0,
+                    total_tokens=u.total_tokens if u else 0,
+                    context_used_percent=u.context_used_percent if u else 0.0,
                 )
-                prompt = json.dumps({"title": article.title, "maintext": article.maintext})
-                content = types.Content(role="user", parts=[types.Part(text=prompt)])
-
-                token_tracker = TokenTracker()
-                final_text = ""
-                async for event in runner.run_async(
-                    user_id="workflow", session_id=session.id, new_message=content
-                ):
-                    token_tracker.add_from_event(event)
-                    if hasattr(event, "is_final_response") and event.is_final_response():
-                        if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
-                            for part in event.content.parts:
-                                if not getattr(part, "thought", False) and hasattr(part, "text") and part.text:
-                                    final_text = part.text
-
-                duration_ms = int((time.time() - start) * 1000)
-                u = token_tracker.usage
-
-                output: EntityExtractionOutput | None = None
-                if final_text.strip():
-                    try:
-                        output = EntityExtractionOutput.model_validate_json(final_text.strip())
-                    except Exception:
-                        output = EntityExtractionOutput.model_validate(json.loads(final_text.strip()))
-
-                results.append(
-                    EntityExtractionResult(
-                        article_index=i,
-                        mentioned_companies=output.mentioned_companies if output else [],
-                        named_entities=[e.model_dump() for e in output.named_entities] if output else [],
-                        duration_ms=duration_ms,
-                        total_prompt_tokens=u.total_prompt_tokens,
-                        total_completion_tokens=u.total_completion_tokens,
-                        total_tokens=u.total_tokens,
-                        context_used_percent=u.context_used_percent,
-                    )
-                )
-                token_info = f", tokens: {u.total_tokens}" if u.total_tokens else ""
-                console.print(
-                    f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({duration_ms}ms{token_info})"
-                )
-            except Exception as exc:
-                duration_ms = int((time.time() - start) * 1000)
-                logger.error(f"Entity extraction failed for article {i}: {exc}")
-                results.append(
-                    EntityExtractionResult(article_index=i, duration_ms=duration_ms, error=str(exc))
-                )
-                console.print(f"  [red]Entity extraction[/red] article {i + 1}/{len(articles)} FAILED: {exc}")
-    finally:
-        await runner.close()
+            )
+            token_info = f", tokens: {u.total_tokens}" if u and u.total_tokens else ""
+            console.print(
+                f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({response.total_duration_ms}ms{token_info})"
+            )
+        except Exception as exc:
+            logger.error(f"Entity extraction failed for article {i}: {exc}")
+            results.append(
+                EntityExtractionResult(article_index=i, error=str(exc))
+            )
+            console.print(f"  [red]Entity extraction[/red] article {i + 1}/{len(articles)} FAILED: {exc}")
 
     return results
 
