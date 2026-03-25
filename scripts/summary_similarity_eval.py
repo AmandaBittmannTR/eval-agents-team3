@@ -14,6 +14,10 @@ another count, or ``--all`` to run the full dataset (slow).
 API keys are read from the project ``.env`` at the repo root (not the process cwd), matching
 other bootcamp scripts. Set ``GEMINI_API_KEY`` and/or ``OPENAI_API_KEY`` as in ``.env.example``;
 if only ``OPENAI_API_KEY`` is set, it is mirrored to ``GEMINI_API_KEY`` for ADK.
+
+Use ``--langfuse`` to send the same per-article and aggregate metrics to Langfuse as scores on a
+single trace (requires ``LANGFUSE_PUBLIC_KEY``, ``LANGFUSE_SECRET_KEY``, and optional
+``LANGFUSE_HOST`` in ``.env``).
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -201,6 +206,116 @@ def run_eval(
     return rows, aggregates
 
 
+def _clip_text(text: str, max_chars: int) -> str:
+    t = text.strip()
+    if len(t) <= max_chars:
+        return t
+    return f"{t[: max_chars - 3]}..."
+
+
+def push_summary_similarity_eval_to_langfuse(
+    *,
+    rows: list[dict[str, Any]],
+    aggregates: dict[str, float],
+    ground: dict[str, dict[str, str]],
+    agent_summaries: dict[str, str],
+    run_metadata: dict[str, Any],
+) -> None:
+    """Send one Langfuse trace with per-article spans, scores, and aggregate trace scores."""
+    from aieng.agent_evals.async_client_manager import AsyncClientManager
+
+    manager = AsyncClientManager.get_instance()
+    cfg = manager.configs
+    if not cfg.langfuse_public_key or not cfg.langfuse_secret_key:
+        logger.warning(
+            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must both be set; skipping Langfuse upload.",
+        )
+        return
+
+    lf = manager.langfuse_client
+    try:
+        if not lf.auth_check():
+            logger.warning("Langfuse authentication failed; skipping upload.")
+            return
+    except Exception:
+        logger.exception("Langfuse auth_check failed; skipping upload.")
+        return
+
+    session_id = f"summary_similarity_eval-{uuid.uuid4().hex[:12]}"
+    trace_id_for_url: str | None = None
+
+    try:
+        with lf.start_as_current_span(
+            name="summary_similarity_eval",
+            metadata=run_metadata,
+            input={
+                "data_path": run_metadata.get("data_path"),
+                "offset": run_metadata.get("offset"),
+                "limit": run_metadata.get("limit"),
+                "all": run_metadata.get("all"),
+                "n_articles": len(rows),
+            },
+        ) as root:
+            root.update_trace(
+                name="Summary similarity eval",
+                session_id=session_id,
+                tags=["summary_similarity_eval", "bootcamp"],
+            )
+            for row in rows:
+                aid = row["article_id"]
+                ref = ground[aid]
+                summary = agent_summaries.get(aid, "")
+                with root.start_as_current_span(
+                    name="summarize_article",
+                    metadata={"article_id": aid},
+                    input={
+                        "article_id": aid,
+                        "title": _clip_text(ref["title"], 500),
+                        "maintext": _clip_text(ref["maintext"], 8000),
+                    },
+                    output={"summary": _clip_text(summary, 8000)},
+                ) as art_span:
+                    art_span.update(
+                        metadata={"reference_description": _clip_text(ref["description"], 2000)},
+                    )
+                    art_span.score(
+                        name="cosine_tfidf_vs_reference_summary",
+                        value=float(row["cosine_tfidf_vs_reference_summary"]),
+                        data_type="NUMERIC",
+                    )
+                    art_span.score(
+                        name="bertscore_f1_vs_article",
+                        value=float(row["bertscore_f1_vs_article"]),
+                        data_type="NUMERIC",
+                    )
+
+            root.update(output={"aggregates": aggregates})
+            root.score_trace(
+                name="mean_cosine_tfidf_vs_reference_summary",
+                value=float(aggregates["mean_cosine_tfidf_vs_reference_summary"]),
+                data_type="NUMERIC",
+            )
+            root.score_trace(
+                name="mean_bertscore_f1_vs_article",
+                value=float(aggregates["mean_bertscore_f1_vs_article"]),
+                data_type="NUMERIC",
+            )
+            root.score_trace(
+                name="n_matched",
+                value=float(aggregates["n_matched"]),
+                data_type="NUMERIC",
+            )
+            trace_id_for_url = lf.get_current_trace_id()
+
+        lf.flush()
+        if trace_id_for_url:
+            url = lf.get_trace_url(trace_id=trace_id_for_url)
+            if url:
+                logger.info("Langfuse trace: %s", url)
+    except Exception:
+        logger.exception("Failed to upload summary similarity eval to Langfuse")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -255,6 +370,14 @@ def main(argv: list[str] | None = None) -> int:
         "--quiet",
         action="store_true",
         help="Only print aggregate JSON, not per-row table.",
+    )
+    parser.add_argument(
+        "--langfuse",
+        action="store_true",
+        help=(
+            "Upload this run to Langfuse: one trace with per-article spans/scores and aggregate "
+            "trace scores (requires LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST in .env)."
+        ),
     )
     args = parser.parse_args(argv)
     article_limit: int | None = None if args.all else args.limit
@@ -314,6 +437,21 @@ def main(argv: list[str] | None = None) -> int:
         with out_path.open("w", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row) + "\n")
+
+    if args.langfuse:
+        push_summary_similarity_eval_to_langfuse(
+            rows=rows,
+            aggregates=aggregates,
+            ground=ground,
+            agent_summaries=agent_summaries,
+            run_metadata={
+                "data_path": str(data_path),
+                "offset": args.offset,
+                "limit": None if args.all else args.limit,
+                "all": args.all,
+                "bert_model": args.bert_model,
+            },
+        )
 
     return 0
 

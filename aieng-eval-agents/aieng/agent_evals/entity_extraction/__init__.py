@@ -14,11 +14,12 @@ Example
 'EntityExtractionAgent'
 """
 
-from .agent import create_entity_extraction_agent
+from .agent import EntityExtractionResponse, create_entity_extraction_agent
 from .entity_extraction_models import EntityExtractionOutput, NamedEntity
 
 __all__ = [
     "create_entity_extraction_agent",
     "EntityExtractionOutput",
+    "EntityExtractionResponse",
     "NamedEntity",
 ]

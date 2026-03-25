@@ -24,16 +24,19 @@ Examples
 import json
 import logging
 import re
+import time
 import uuid
 
 from aieng.agent_evals.configs import Configs
 from aieng.agent_evals.entity_extraction.entity_extraction_models import EntityExtractionOutput
+from aieng.agent_evals.token_tracker import TokenTracker, TokenUsage
 from aieng.agent_evals.tools import create_google_search_tool
 from google.adk.agents import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from google.genai.types import GenerateContentConfig, ThinkingConfig
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +172,24 @@ tickers that appear literally in the article text.
   - ``word``: shortest natural surface form from the article.
   - ``normalized``: ticker symbol string for ORG entities, or ``null``.
 """
+
+
+class EntityExtractionResponse(BaseModel):
+    """Response from the entity extraction agent.
+
+    Attributes
+    ----------
+    output : EntityExtractionOutput
+        The extracted entities and mentioned companies.
+    total_duration_ms : int
+        Total execution time in milliseconds.
+    token_usage : TokenUsage | None
+        Token usage statistics for this extraction call.
+    """
+
+    output: EntityExtractionOutput
+    total_duration_ms: int = 0
+    token_usage: TokenUsage | None = None
 
 
 def create_entity_extraction_agent(
@@ -342,7 +363,7 @@ async def run_entity_extraction(
     maintext: str,
     *,
     use_ticker_cache: bool = True,
-) -> EntityExtractionOutput:
+) -> EntityExtractionResponse:
     """Run the entity extraction agent on one article and return structured output.
 
     Parameters
@@ -355,9 +376,11 @@ async def run_entity_extraction(
         When True, use the local ticker cache with Google Search fallback.
         New discoveries are appended to ``nasdaq_tickers.json``.
     """
+    config = Configs()  # type: ignore[call-arg]
     agent = create_entity_extraction_agent(
         use_ticker_cache=use_ticker_cache,
     )
+    token_tracker = TokenTracker(model=config.default_worker_model)
     session_service = InMemorySessionService()
     runner = Runner(
         app_name=agent.name,
@@ -365,6 +388,7 @@ async def run_entity_extraction(
         session_service=session_service,
         auto_create_session=True,
     )
+    start_time = time.time()
     try:
         payload = json.dumps({"title": title, "maintext": maintext}, ensure_ascii=False)
         message = types.Content(parts=[types.Part(text=payload)], role="user")
@@ -374,6 +398,7 @@ async def run_entity_extraction(
             user_id="entity_extraction",
             new_message=message,
         ):
+            token_tracker.add_from_event(event)
             if not event.is_final_response():
                 continue
             chunk = _final_response_text_from_event(event)
@@ -385,6 +410,11 @@ async def run_entity_extraction(
         if not final_text or not final_text.strip():
             raise RuntimeError("Entity extraction produced no output.")
 
-        return _parse_entity_output(final_text)
+        total_duration_ms = int((time.time() - start_time) * 1000)
+        return EntityExtractionResponse(
+            output=_parse_entity_output(final_text),
+            total_duration_ms=total_duration_ms,
+            token_usage=token_tracker.usage,
+        )
     finally:
         await runner.close()

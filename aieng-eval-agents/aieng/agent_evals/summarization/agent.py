@@ -42,7 +42,7 @@ from .retry import (
     is_retryable_api_error,
 )
 from .system_instructions import build_system_instructions
-from .token_tracker import TokenTracker
+from aieng.agent_evals.token_tracker import TokenTracker, TokenUsage
 
 
 logger = logging.getLogger(__name__)
@@ -59,11 +59,14 @@ class SummarizationResponse(BaseModel):
         Step-by-step reasoning trace from the model's thinking tokens.
     total_duration_ms : int
         Total execution time in milliseconds.
+    token_usage : TokenUsage | None
+        Token usage statistics for this summarization call.
     """
 
     text: str
     reasoning_chain: list[str] = []
     total_duration_ms: int = 0
+    token_usage: TokenUsage | None = None
 
 
 class SummarizationAgent:
@@ -335,6 +338,7 @@ class SummarizationAgent:
             text=results.get("final_response", ""),
             reasoning_chain=results.get("reasoning_chain", []),
             total_duration_ms=total_duration_ms,
+            token_usage=self._token_tracker.usage,
         )
 
     def summarize(
