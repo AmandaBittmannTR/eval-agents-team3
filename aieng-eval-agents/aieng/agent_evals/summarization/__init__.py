@@ -12,10 +12,12 @@ Example
 """
 
 from .agent import SummarizationAgent, SummarizationAgentManager, SummarizationResponse
+from aieng.agent_evals.token_tracker import TokenUsage
 
 
 __all__ = [
     "SummarizationAgent",
     "SummarizationAgentManager",
     "SummarizationResponse",
+    "TokenUsage",
 ]

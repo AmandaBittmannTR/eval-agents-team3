@@ -91,14 +91,22 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
 
         # Attach rich execution data to the span metadata
         client_manager = AsyncClientManager.get_instance()
-        client_manager.langfuse_client.update_current_span(
-            metadata={
-                "reasoning_chain": response.reasoning_chain,
-                "total_duration_ms": response.total_duration_ms,
-                "article_title": title,
-                "article_length": len(maintext),
-            },
-        )
+        # Prepare metadata with fallback for empty reasoning chain
+        metadata = {
+            "total_duration_ms": response.total_duration_ms,
+            "article_title": title[:100],  # Truncate long titles
+            "article_length": len(maintext),
+            "summary_length": len(response.text),
+            "has_reasoning_chain": bool(response.reasoning_chain),
+        }
+        
+        # Add reasoning chain if available, otherwise note it's empty
+        if response.reasoning_chain:
+            metadata["reasoning_chain"] = response.reasoning_chain[:3]  # Limit to first 3 items
+        else:
+            metadata["reasoning_note"] = "No explicit reasoning chain generated (normal for simple tasks)"
+            
+        client_manager.langfuse_client.update_current_span(metadata=metadata)
 
         return response.text
     except Exception as e:
@@ -150,7 +158,7 @@ async def summarization_evaluator(
         # Use the summarization-specific evaluator
         result = await evaluate_summarization_async(
             title=title,
-            maintext=maintext,
+            body=maintext,
             summary=str(output),
             model_config=LLMRequestConfig(temperature=0.0),
         )

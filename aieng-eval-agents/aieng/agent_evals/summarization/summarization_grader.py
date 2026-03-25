@@ -176,31 +176,57 @@ SUMMARIZATION_GRADER_PROMPT = """\
 Your task is to evaluate the quality of an AI-generated summary of a financial news article.
 
 **Summary Evaluation Task**
-* **Purpose:** Assess whether the AI summary effectively captures the key information from the original article while maintaining accuracy, completeness, conciseness, and clarity.
+* **Purpose:** Assess whether the AI summary meets the specific requirements for financial news summarization: 2-4 sentences, captures main events, includes key entities, mentions financial figures, and stays grounded in the source material.
 * **Process:**
-  * Read the original article (title + body) carefully to understand the key information, main points, and important details.
-  * Analyze the AI-generated summary against the original article.
+  * Read the original article (title + body) carefully to identify the main event/announcement, key companies/people involved, and significant financial figures.
+  * Analyze the AI-generated summary against the original article and the specific summarization requirements.
   * Evaluate the summary across four key dimensions:
-    * **Accuracy (0-1)**: Are all facts in the summary correct? Are there any hallucinations, misrepresentations, or factual errors?
-    * **Completeness (0-1)**: Does the summary capture the most important information from the article? Are key points missing?
-    * **Conciseness (0-1)**: Is the summary appropriately brief? Does it avoid unnecessary details while maintaining essential information?
-    * **Clarity (0-1)**: Is the summary well-written, coherent, and easy to understand? Is the language clear and professional?
+    * **Accuracy (0-1)**: Are all facts in the summary correct and based solely on the article content? Are there any hallucinations, misrepresentations, or added outside information?
+    * **Completeness (0-1)**: Does the summary capture the main event/announcement, key companies or people involved, and significant financial figures when present? Are critical elements missing?
+    * **Conciseness (0-1)**: Is the summary 2-4 sentences long? Does it avoid unnecessary details while including essential information? Is it appropriately brief for financial news?
+    * **Clarity (0-1)**: Is the summary well-written, coherent, and easy to understand? Is the language clear and professional without headings, labels, or preamble?
   * Assign an overall quality rating: "excellent", "good", "fair", or "poor"
-* **Explanation:** Provide a detailed explanation of your assessment, referencing specific aspects of the summary and how they relate to the original article.
+* **Explanation:** Provide a detailed explanation of your assessment, referencing how well the summary meets the specific requirements and how it relates to the original article.
 
 **Scoring Guidelines:**
-* **1.0 (Perfect)**: Exceptional performance in this dimension
-* **0.8-0.9 (Very Good)**: Strong performance with minor issues
-* **0.6-0.7 (Good)**: Adequate performance with some notable issues  
-* **0.4-0.5 (Fair)**: Below average with significant issues
-* **0.2-0.3 (Poor)**: Major problems in this dimension
-* **0.0-0.1 (Very Poor)**: Severe issues or complete failure
+
+**Accuracy (Factual Correctness & Groundedness):**
+* **1.0**: All facts are correct and based solely on article content, no hallucinations or outside information
+* **0.8-0.9**: Facts are correct with minor interpretation issues, well-grounded in source
+* **0.6-0.7**: Mostly correct facts but some minor inaccuracies or slight overreach beyond article
+* **0.4-0.5**: Several factual errors or some information not found in the original article
+* **0.2-0.3**: Major factual errors or significant hallucinated content
+* **0.0-0.1**: Severely inaccurate or completely fabricated information
+
+**Completeness (Coverage of Required Elements):**
+* **1.0**: Captures main event/announcement, key companies/people, and all relevant financial figures
+* **0.8-0.9**: Captures main elements with minor omissions of secondary details
+* **0.6-0.7**: Captures main event but misses some key companies, people, or financial figures
+* **0.4-0.5**: Captures basic information but omits several important elements
+* **0.2-0.3**: Misses main event or most key entities/figures
+* **0.0-0.1**: Fails to capture the primary purpose or content of the article
+
+**Conciseness (Length & Focus):**
+* **1.0**: Exactly 2-4 sentences, perfect balance of brevity and essential information
+* **0.8-0.9**: 2-4 sentences with excellent focus, minor wordiness or slight under-coverage
+* **0.6-0.7**: Appropriate length but some unnecessary details or missing key points
+* **0.4-0.5**: Too long (5+ sentences) or too short (1 sentence), affects information balance
+* **0.2-0.3**: Significantly too long or too short, poor information prioritization
+* **0.0-0.1**: Extremely poor length control, verbose or overly terse
+
+**Clarity (Professional Communication):**
+* **1.0**: Clear, professional language with no headings/labels/preamble, excellent readability
+* **0.8-0.9**: Very clear and professional with minor style issues
+* **0.6-0.7**: Generally clear but some awkward phrasing or minor formatting issues
+* **0.4-0.5**: Readable but includes unwanted headings/labels or unclear language
+* **0.2-0.3**: Poor clarity, includes significant formatting issues or confusing language
+* **0.0-0.1**: Very unclear, includes headings/preamble, or incomprehensible
 
 **Overall Quality Guidelines:**
-* **Excellent**: All dimensions score 0.8+, summary is publication-ready
-* **Good**: Most dimensions score 0.6+, minor improvements needed
-* **Fair**: Mixed performance, significant improvements needed
-* **Poor**: Multiple dimensions below 0.5, major revision required
+* **Excellent**: All dimensions score 0.8+, meets all agent requirements, publication-ready
+* **Good**: Most dimensions score 0.6+, minor improvements needed, mostly follows requirements
+* **Fair**: Mixed performance, significant improvements needed, partially follows requirements
+* **Poor**: Multiple dimensions below 0.5, major revision required, fails key requirements
 
 **Output Format:**
 Your evaluation *must* be structured as a nested JSON dictionary with the following top-level key: "Summary Evaluation". Please return NULL if any of the inputs are empty or invalid.
@@ -221,10 +247,10 @@ Make sure you return a valid JSON string. Pay special attention to quotes, comma
   "Summary Evaluation": {{
     "Accuracy": 0.9,
     "Completeness": 0.8,
-    "Conciseness": 0.7,
+    "Conciseness": 0.9,
     "Clarity": 0.9,
     "Overall Quality": "good",
-    "Explanation": "The summary accurately captures the main financial results and key announcements. It includes all major points from the earnings report. The summary is appropriately brief but could be slightly more concise. The writing is clear and professional."
+    "Explanation": "The summary is factually accurate and grounded in the article content with no hallucinations. It captures the main announcement and key company involved, though it misses one significant financial figure mentioned. The summary is exactly 3 sentences, meeting the length requirement perfectly. The writing is clear, professional, and contains no headings or preamble as required."
   }}
 }}
 ```

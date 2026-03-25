@@ -29,18 +29,9 @@ from typing import Any
 
 import pandas as pd
 from aieng.agent_evals.configs import Configs
-from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
-from aieng.agent_evals.entity_extraction.agent import (
-    _final_response_text_from_event,
-    _parse_entity_output,
-)
 from aieng.agent_evals.evaluation.trace import flush_traces
-from aieng.agent_evals.langfuse import init_tracing
 from aieng.agent_evals.summarization import SummarizationAgent
 from dotenv import load_dotenv
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
@@ -120,6 +111,10 @@ class EntityExtractionResult(BaseModel):
     named_entities: list[dict[str, Any]] = Field(default_factory=list)
     duration_ms: int = 0
     error: str | None = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    context_used_percent: float = 0.0
 
 
 class SummarizationResult(BaseModel):
@@ -129,6 +124,10 @@ class SummarizationResult(BaseModel):
     summary: str = ""
     duration_ms: int = 0
     error: str | None = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    context_used_percent: float = 0.0
 
 
 class WorkflowResult(BaseModel):
@@ -275,121 +274,82 @@ def load_data_from_langfuse(
 
 
 async def run_entity_extraction(
-    articles: list[ArticleRecord], *, langfuse_tracing: bool = False
+    articles: list[ArticleRecord], *, langfuse_tracing: bool = False,
 ) -> list[EntityExtractionResult]:
     """Run the entity extraction agent over all articles sequentially.
 
-    Each article gets a fresh ADK session. The agent's ``output_schema`` is
-    ``EntityExtractionOutput``, so the final response is structured JSON that
-    we parse back into fields for the result model.
+    Delegates to ``agent.py``'s ``run_entity_extraction`` which handles
+    session management, robust JSON parsing, and token tracking internally.
+    Retries once on failure before recording an error.
     """
-    if langfuse_tracing:
-        init_tracing(service_name="EntityExtractionAgent")
-
-    agent = create_entity_extraction_agent()
-    session_service = InMemorySessionService()
-    runner = Runner(app_name="entity_extraction", agent=agent, session_service=session_service)
+    from aieng.agent_evals.entity_extraction.agent import (
+        run_entity_extraction as _extract,
+    )
 
     max_retries = 2
     results: list[EntityExtractionResult] = []
-    try:
-        for i, article in enumerate(articles):
-            start = time.time()
+    for i, article in enumerate(articles):
+        last_err: Exception | None = None
+        for attempt in range(1, max_retries + 1):
             try:
-                prompt = json.dumps(
-                    {"title": article.title, "maintext": article.maintext}
+                response = await _extract(
+                    article.title,
+                    article.maintext,
+                    langfuse_tracing=langfuse_tracing,
                 )
-                content = types.Content(
-                    role="user", parts=[types.Part(text=prompt)]
-                )
-
-                output: EntityExtractionOutput | None = None
-                last_err: Exception | None = None
-
-                for attempt in range(1, max_retries + 1):
-                    session = await session_service.create_session(
-                        app_name="entity_extraction",
-                        user_id="workflow",
-                        state={},
-                    )
-                    final_text: str | None = None
-                    async for event in runner.run_async(
-                        user_id="workflow",
-                        session_id=session.id,
-                        new_message=content,
-                    ):
-                        if (
-                            hasattr(event, "is_final_response")
-                            and event.is_final_response()
-                        ):
-                            chunk = _final_response_text_from_event(event)
-                            if chunk:
-                                final_text = chunk
-
-                    if not final_text or not final_text.strip():
-                        last_err = ValueError(
-                            "Entity extraction produced no output."
-                        )
-                        if attempt < max_retries:
-                            logger.warning(
-                                "Article %d: empty response on attempt %d, retrying…",
-                                i, attempt,
-                            )
-                            continue
-                        break
-
-                    try:
-                        output = _parse_entity_output(final_text)
-                        break
-                    except Exception as parse_err:
-                        last_err = parse_err
-                        if attempt < max_retries:
-                            logger.warning(
-                                "Article %d: parse failed on attempt %d (%s), retrying…",
-                                i, attempt, parse_err,
-                            )
-                            continue
-
-                duration_ms = int((time.time() - start) * 1000)
-
-                if output is None and last_err is not None:
-                    raise last_err
-
+                u = response.token_usage
+                token_fields: dict[str, Any] = {}
+                if u:
+                    token_fields = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
                 results.append(
                     EntityExtractionResult(
                         article_index=i,
-                        mentioned_companies=(
-                            output.mentioned_companies if output else []
-                        ),
-                        named_entities=(
-                            [e.model_dump() for e in output.named_entities]
-                            if output else []
-                        ),
-                        duration_ms=duration_ms,
+                        mentioned_companies=response.output.mentioned_companies,
+                        named_entities=[
+                            e.model_dump()
+                            for e in response.output.named_entities
+                        ],
+                        duration_ms=response.total_duration_ms,
+                        **token_fields,
                     )
+                )
+                token_info = (
+                    f", tokens: {u.total_tokens}"
+                    if u and u.total_tokens else ""
                 )
                 console.print(
                     f"  [green]Entity extraction[/green] article "
-                    f"{i + 1}/{len(articles)} ({duration_ms}ms)"
+                    f"{i + 1}/{len(articles)} "
+                    f"({response.total_duration_ms}ms{token_info})"
                 )
+                last_err = None
+                break
             except Exception as exc:
-                duration_ms = int((time.time() - start) * 1000)
-                logger.error(
-                    "Entity extraction failed for article %d: %s", i, exc,
-                )
-                results.append(
-                    EntityExtractionResult(
-                        article_index=i,
-                        duration_ms=duration_ms,
-                        error=str(exc),
+                last_err = exc
+                if attempt < max_retries:
+                    logger.warning(
+                        "Article %d: attempt %d failed (%s), retrying…",
+                        i, attempt, exc,
                     )
+
+        if last_err is not None:
+            logger.error(
+                "Entity extraction failed for article %d: %s", i, last_err,
+            )
+            results.append(
+                EntityExtractionResult(
+                    article_index=i, error=str(last_err),
                 )
-                console.print(
-                    f"  [red]Entity extraction[/red] article "
-                    f"{i + 1}/{len(articles)} FAILED: {exc}"
-                )
-    finally:
-        await runner.close()
+            )
+            console.print(
+                f"  [red]Entity extraction[/red] article "
+                f"{i + 1}/{len(articles)} FAILED: {last_err}"
+            )
 
     return results
 
@@ -416,10 +376,29 @@ async def run_summarization(
                     session_id=f"workflow-{i}-{uuid.uuid4().hex[:8]}",
                 )
                 duration_ms = response.total_duration_ms or int((time.time() - start) * 1000)
+                token_fields: dict[str, Any] = {}
+                if response.token_usage:
+                    u = response.token_usage
+                    token_fields = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
                 results.append(
-                    SummarizationResult(article_index=i, summary=response.text, duration_ms=duration_ms)
+                    SummarizationResult(
+                        article_index=i,
+                        summary=response.text,
+                        duration_ms=duration_ms,
+                        **token_fields,
+                    )
                 )
-                console.print(f"  [blue]Summarization[/blue] article {i + 1}/{len(articles)} ({duration_ms}ms)")
+                token_info = (
+                    f", tokens: {token_fields.get('total_tokens', 0)}"
+                    if token_fields
+                    else ""
+                )
+                console.print(f"  [blue]Summarization[/blue] article {i + 1}/{len(articles)} ({duration_ms}ms{token_info})")
             except Exception as exc:
                 duration_ms = int((time.time() - start) * 1000)
                 logger.error(f"Summarization failed for article {i}: {exc}")

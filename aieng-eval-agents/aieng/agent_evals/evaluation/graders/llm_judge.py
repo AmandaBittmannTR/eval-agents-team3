@@ -227,10 +227,19 @@ def create_llm_as_judge_evaluator(
                 response_format=LLMJudgeResponse,
             )
 
+            # Extract token usage from the completion response
+            token_metadata: dict[str, int] = {}
+            if completion.usage:
+                token_metadata = {
+                    "judge_prompt_tokens": completion.usage.prompt_tokens,
+                    "judge_completion_tokens": completion.usage.completion_tokens,
+                    "judge_total_tokens": completion.usage.total_tokens,
+                }
+
             # Extract and validate the structured judge response
             judge_response: LLMJudgeResponse | None = completion.choices[0].message.parsed
 
-            return _to_evaluations(judge_response)
+            return _to_evaluations(judge_response, token_metadata=token_metadata)
         except Exception as exc:
             return [build_error_evaluation(name=resolved_error_metric_name, error=exc, prefix="LLM judge error")]
 
@@ -238,7 +247,11 @@ def create_llm_as_judge_evaluator(
     return _evaluator
 
 
-def _to_evaluations(response: LLMJudgeResponse | None) -> list[Evaluation]:
+def _to_evaluations(
+    response: LLMJudgeResponse | None,
+    *,
+    token_metadata: dict[str, int] | None = None,
+) -> list[Evaluation]:
     """Map a validated judge response into Langfuse evaluations."""
     if response is None or not response.metrics:
         raise ValueError("Judge response metrics must contain at least one metric.")
@@ -248,6 +261,8 @@ def _to_evaluations(response: LLMJudgeResponse | None) -> list[Evaluation]:
         metric_metadata: dict[str, Any] = dict(metric.metadata or {})
         if metric.confidence is not None:
             metric_metadata["confidence"] = metric.confidence
+        if token_metadata:
+            metric_metadata.update(token_metadata)
 
         evaluations.append(
             Evaluation(
