@@ -5,10 +5,10 @@ entity extraction and summarization evaluations.
 
 Usage:
     # Upload for both entity extraction and summarization
-    python langfuse_upload.py --dataset-path data/transformed_data/2017_data.csv --dataset-name "FinancialNews-2017"
+    python implementations/shared/langfuse_upload.py --dataset-path data/transformed_data/2017_data.csv --dataset-name "FinancialNews-2017"
     
     # Upload with specific evaluation focus
-    python langfuse_upload.py --dataset-path data/transformed_data/2017_data.csv --dataset-name "FinancialNews-2017" --evaluation-type both
+    python implementations/shared/langfuse_upload.py --dataset-path data/transformed_data/2017_data.csv --dataset-name "FinancialNews-2017" --evaluation-type both
 """
 
 import asyncio
@@ -16,6 +16,7 @@ import csv
 import json
 import logging
 import tempfile
+import hashlib
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,37 +30,72 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
-def load_financial_news_data(file_path: str) -> list[dict[str, Any]]:
-    """Load financial news data from CSV, JSON, or JSONL file."""
-    data = []
-    file_ext = Path(file_path).suffix.lower()
+class DataLoader:
+    """Handles loading data from different file formats."""
     
-    if file_ext == '.csv':
-        # Load CSV format (recommended)
+    @staticmethod
+    def safe_json_parse(json_str: str, default=None) -> Any:
+        """Safely parse JSON strings or Python literals."""
+        if default is None:
+            default = []
+        if not json_str or json_str.strip() == "":
+            return default
+        
+        # Try JSON parsing first
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+        
+        # Fall back to Python literal_eval for single quotes
+        try:
+            import ast
+            return ast.literal_eval(json_str)
+        except (ValueError, SyntaxError):
+            logger.debug(f"Could not parse: {json_str[:50]}...")
+            return default
+    
+    @staticmethod
+    def load_csv(file_path: str) -> list[dict[str, Any]]:
+        """Load data from CSV file."""
         logger.info("Loading CSV format...")
+        data = []
+        
         with open(file_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
+            
             for row_num, row in enumerate(reader, 1):
                 try:
-                    # Parse JSON strings back to objects
                     processed_row = {
-                        "title": row["title"],
-                        "maintext": row["maintext"],
-                        "description": row.get("description", ""),
-                        "mentioned_companies": json.loads(row["mentioned_companies"]) if row["mentioned_companies"] else [],
-                        "named_entities": json.loads(row["named_entities"]) if row["named_entities"] else []
+                        "title": row.get("title", "").strip(),
+                        "maintext": row.get("maintext", "").strip(),
+                        "description": row.get("description", "").strip(),
+                        "mentioned_companies": DataLoader.safe_json_parse(row.get("mentioned_companies", ""), []),
+                        "named_entities": DataLoader.safe_json_parse(row.get("named_entities", ""), [])
                     }
+                    
+                    # Skip rows with empty title or maintext
+                    if not processed_row["title"] or not processed_row["maintext"]:
+                        logger.debug(f"Skipping row {row_num}: empty title or maintext")
+                        continue
+                    
                     data.append(processed_row)
-                except (json.JSONDecodeError, KeyError) as e:
+                except Exception as e:
                     logger.warning(f"Skipping invalid CSV row {row_num}: {e}")
-        logger.info(f"Loaded {len(data)} records from CSV format")
+                    continue
+        
+        logger.info(f"Loaded {len(data)} valid records from CSV format")
+        return data
     
-    else:
-        # Load JSON/JSONL format
+    @staticmethod
+    def load_json(file_path: str) -> list[dict[str, Any]]:
+        """Load data from JSON or JSONL file."""
+        data = []
+        
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read().strip()
             
-            # Try to load as single JSON array first (original format)
+            # Try JSON array format first
             try:
                 json_data = json.loads(content)
                 if isinstance(json_data, list):
@@ -81,8 +117,180 @@ def load_financial_news_data(file_path: str) -> list[dict[str, Any]]:
                     except json.JSONDecodeError as e:
                         logger.warning(f"Skipping invalid JSON on line {line_num}: {e}")
                 logger.info(f"Loaded {len(data)} records from JSONL format")
+        
+        return data
     
-    return data
+    @classmethod
+    def load_data(cls, file_path: str) -> list[dict[str, Any]]:
+        """Load data from file, auto-detecting format."""
+        file_ext = Path(file_path).suffix.lower()
+        
+        if file_ext == '.csv':
+            return cls.load_csv(file_path)
+        else:
+            return cls.load_json(file_path)
+
+class DataTransformer:
+    """Transforms data for different evaluation types."""
+    
+    @staticmethod
+    def create_input_data(example: dict, evaluation_type: str) -> dict:
+        """Create input data for agents."""
+        input_data = {
+            "title": example["title"],
+            "maintext": example["maintext"]
+        }
+        
+        # Add description for summarization context
+        if evaluation_type in ["summarization", "both"] and example.get("description"):
+            input_data["description"] = example["description"]
+        
+        return input_data
+    
+    @staticmethod
+    def create_entity_expected_output(example: dict) -> dict:
+        """Convert ground truth entities to agent format."""
+        agent_format_entities = []
+        
+        for entity in example.get("named_entities", []):
+            entity_group = entity.get("entity_group", "MISC")
+            
+            # Map entity groups to agent types
+            if entity_group == "ORG":
+                entity_type = "B"  # Business
+            elif entity_group == "PER":
+                entity_type = "P"  # Person
+            else:
+                entity_type = "M"  # Miscellaneous
+            
+            agent_entity = {
+                "type": entity_type,
+                "name": entity.get("word", ""),
+                "ticker": entity.get("normalized") if entity.get("normalized") else None
+            }
+            agent_format_entities.append(agent_entity)
+        
+        return {"entities": agent_format_entities}
+    
+    @staticmethod
+    def create_summary_expected_output(example: dict, row_index: int) -> str:
+        """Create expected summary output."""
+        summary = example.get("description", "").strip()
+        
+        # Fallback to first sentence if no description
+        if not summary and example.get("maintext"):
+            sentences = example["maintext"].split('. ')
+            summary = sentences[0] + '.' if sentences else ""
+        
+        # Final fallback
+        if not summary:
+            summary = "No summary available"
+            logger.warning(f"Row {row_index}: No description or maintext available for summarization")
+        
+        return summary
+    
+    @staticmethod
+    def create_metadata(example: dict, row_index: int, evaluation_type: str) -> dict:
+        """Create metadata for the record."""
+        metadata = {
+            "example_id": row_index,
+            "source": "financial_news",
+            "evaluation_type": evaluation_type,
+            "article_length": len(example.get("maintext", "")),
+            "has_description": bool(example.get("description", "").strip()),
+            "description_length": len(example.get("description", "")),
+            "entity_count": len(example.get("named_entities", [])),
+            "company_count": len(example.get("mentioned_companies", []))
+        }
+        
+        # Add evaluation-specific metadata
+        if evaluation_type in ["summarization", "both"]:
+            metadata["summary_source"] = "description" if example.get("description", "").strip() else "generated"
+        
+        if evaluation_type in ["entity_extraction", "both"]:
+            ground_truth_format = {
+                "named_entities": example.get("named_entities", []),
+                "mentioned_companies": example.get("mentioned_companies", [])
+            }
+            metadata["ground_truth_format"] = json.dumps(ground_truth_format)
+        
+        return metadata
+
+
+class LangfuseUploader:
+    """Handles the upload process to Langfuse."""
+    
+    @staticmethod
+    def create_deterministic_id(dataset_name: str, row_index: int, input_data: dict) -> str:
+        """Create a deterministic ID to prevent duplicates."""
+        input_hash = hashlib.md5(json.dumps(input_data, sort_keys=True).encode()).hexdigest()[:8]
+        return f"{dataset_name}-{row_index}-{input_hash}"
+    
+    @staticmethod
+    async def upload_to_langfuse(
+        examples: list[dict], 
+        dataset_name: str, 
+        evaluation_type: str
+    ) -> None:
+        """Upload examples to Langfuse."""
+        if not examples:
+            logger.error("No examples to upload")
+            return
+        
+        # Create temporary JSONL file
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".jsonl",
+            prefix=f"financial_news_{dataset_name}_",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            logger.info(f"Writing {len(examples)} examples to temporary file...")
+            
+            for i, example in enumerate(examples):
+                # Create input data
+                input_data = DataTransformer.create_input_data(example, evaluation_type)
+                
+                # Create expected output based on evaluation type
+                if evaluation_type == "entity_extraction":
+                    expected_output = json.dumps(DataTransformer.create_entity_expected_output(example))
+                elif evaluation_type == "summarization":
+                    expected_output = DataTransformer.create_summary_expected_output(example, i)
+                else:  # both - include both entity extraction and summary
+                    entity_output = DataTransformer.create_entity_expected_output(example)
+                    summary_output = DataTransformer.create_summary_expected_output(example, i)
+                    combined_output = {
+                        "entities": entity_output["entities"],
+                        "summary": summary_output
+                    }
+                    expected_output = json.dumps(combined_output)
+                
+                # Create metadata
+                metadata = DataTransformer.create_metadata(example, i, evaluation_type)
+                
+                # Create record with deterministic ID
+                record = {
+                    "id": LangfuseUploader.create_deterministic_id(dataset_name, i, input_data),
+                    "input": json.dumps(input_data),
+                    "expected_output": expected_output,
+                    "metadata": metadata,
+                }
+                
+                temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        try:
+            # Upload to Langfuse
+            await upload_dataset_to_langfuse(
+                dataset_path=str(temp_path),
+                dataset_name=dataset_name,
+            )
+            logger.info(f"Successfully uploaded dataset '{dataset_name}' for {evaluation_type} evaluation(s)")
+        finally:
+            # Clean up temporary file
+            if temp_path.exists():
+                temp_path.unlink()
+                logger.debug(f"Removed temporary file: {temp_path}")
 
 
 async def upload_financial_news_to_langfuse(
@@ -91,122 +299,17 @@ async def upload_financial_news_to_langfuse(
     samples: int | None = None,
     evaluation_type: Literal["entity_extraction", "summarization", "both"] = "both",
 ) -> None:
-    """Upload financial news data to Langfuse for evaluation.
-
-    Parameters
-    ----------
-    dataset_name : str
-        Name for the dataset in Langfuse.
-    dataset_path : str, optional
-        Path to existing CSV/JSON/JSONL file with financial news data.
-    samples : int, optional
-        Number of samples to create (if dataset_path not provided).
-    evaluation_type : str, optional
-        Type of evaluation to optimize for: "entity_extraction", "summarization", or "both".
-    """
+    """Main upload function."""
+    
+    # Load or generate data
     if dataset_path:
-        # Load from existing file
-        examples = load_financial_news_data(dataset_path)
+        examples = DataLoader.load_data(dataset_path)
         if samples:
             examples = examples[:samples]
             logger.info(f"Limited to first {samples} examples")
-    else:
-        # Create sample data for testing
-        if not samples:
-            samples = 10
-        
-        logger.info(f"Creating {samples} sample financial news examples")
-        examples = []
-        for i in range(samples):
-            examples.append({
-                "title": f"Sample Financial News {i+1}",
-                "maintext": f"This is sample financial news content {i+1}. Apple Inc. (AAPL) reported strong quarterly earnings, beating analyst expectations. The technology giant saw revenue growth of 15% year-over-year, driven by strong iPhone and services performance.",
-                "description": f"Apple Inc. exceeded quarterly expectations with 15% revenue growth driven by iPhone and services.",
-                "named_entities": [
-                    {"entity_group": "ORG", "word": "Apple Inc.", "normalized": "AAPL"},
-                    {"entity_group": "MISC", "word": "iPhone", "normalized": None}
-                ],
-                "mentioned_companies": ["AAPL"]
-            })
-
-    if not examples:
-        logger.error("No examples found")
-        return
-
-    # Convert examples to Langfuse format
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".jsonl",
-        prefix=f"financial_news_{dataset_name}_",
-        delete=False,
-    ) as temp_file:
-        temp_path = Path(temp_file.name)
-        logger.info(f"Writing {len(examples)} examples to temporary file...")
-
-        for i, example in enumerate(examples):
-            # Shared input format (works for both entity extraction and summarization)
-            input_data = {
-                "title": example["title"],
-                "maintext": example["maintext"]
-            }
-            
-            # Create expected outputs for both evaluation types
-            if evaluation_type in ["entity_extraction", "both"]:
-                entity_expected_output = {
-                    "named_entities": example.get("named_entities", []),
-                    "mentioned_companies": example.get("mentioned_companies", [])
-                }
-            
-            if evaluation_type in ["summarization", "both"]:
-                # Use description as expected summary, fallback to truncated maintext
-                summary_expected_output = example.get("description", "")
-                if not summary_expected_output and example.get("maintext"):
-                    # Create a simple extractive summary from first sentence
-                    sentences = example["maintext"].split('. ')
-                    summary_expected_output = sentences[0] + '.' if sentences else ""
-            
-            # Choose expected output based on evaluation type
-            if evaluation_type == "entity_extraction":
-                expected_output = json.dumps(entity_expected_output)
-            elif evaluation_type == "summarization":
-                expected_output = summary_expected_output
-            else:  # both - default to entity extraction format, summarization will ignore
-                expected_output = json.dumps(entity_expected_output)
-            
-            # Create metadata
-            metadata = {
-                "example_id": i,
-                "source": "financial_news",
-                "evaluation_type": evaluation_type,
-                "article_length": len(example.get("maintext", "")),
-                "has_description": bool(example.get("description", "").strip()),
-                "entity_count": len(example.get("named_entities", [])),
-                "company_count": len(example.get("mentioned_companies", [])),
-                # Store both expected outputs in metadata for flexibility
-                "entity_expected_output": json.dumps(entity_expected_output) if evaluation_type in ["entity_extraction", "both"] else None,
-                "summary_expected_output": summary_expected_output if evaluation_type in ["summarization", "both"] else None
-            }
-            
-            record = {
-                "input": json.dumps(input_data),
-                "expected_output": expected_output,
-                "metadata": metadata,
-            }
-            temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    try:
-        # Upload to Langfuse
-        await upload_dataset_to_langfuse(
-            dataset_path=str(temp_path),
-            dataset_name=dataset_name,
-        )
-        logger.info(f"Successfully uploaded dataset '{dataset_name}' for {evaluation_type} evaluation(s)")
-    finally:
-        # Clean up temporary file
-        if temp_path.exists():
-            temp_path.unlink()
-            logger.debug(f"Removed temporary file: {temp_path}")
+    
+    # Upload to Langfuse
+    await LangfuseUploader.upload_to_langfuse(examples, dataset_name, evaluation_type)
 
 
 @click.command()
