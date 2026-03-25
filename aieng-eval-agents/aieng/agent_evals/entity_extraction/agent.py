@@ -42,8 +42,9 @@ _DEFAULT_AGENT_DESCRIPTION = (
 )
 
 EXTRACTION_PROMPT = """\
-You are a named-entity extraction specialist. Your task is to read the provided \
-article (title + maintext) and extract named entities and company ticker symbols.
+You are a named-entity recognition (NER) system. Your task is to read the \
+provided article and extract named entities, mimicking how a standard NER \
+model (like BERT-NER) would tag text.
 
 ## Input
 
@@ -53,107 +54,90 @@ You will receive a JSON object with two fields:
 
 ## Entity Group Classification Rules
 
-You MUST follow these classification rules exactly:
+Classify every extracted entity into exactly one of these four groups:
 
-### ORG -- publicly traded companies ONLY
-- Use `ORG` **exclusively** for well-known publicly traded companies \
-(e.g. Apple, Google, Amazon, Netflix, Verizon, Wells Fargo) and for \
-ticker symbols that appear literally in the text (e.g. AAPL, GOOG, VZ).
-- Do **NOT** classify the following as `ORG`: universities, research labs, \
-academic journals, courts, government bodies, regulatory agencies, private \
-companies, or consumer brands that are not major publicly traded companies.
+### ORG
+- Publicly traded companies: Apple, Google, Amazon, Netflix, Verizon.
+- Stock ticker symbols that appear literally in the article: AAPL, GOOG, VZ.
+- Other organisations: newspapers, media companies, sports teams.
+- Do **NOT** include: universities, research labs, government agencies, courts, \
+regulatory bodies, or academic journals.
 
-### PER -- named individuals
-- Use `PER` for named people (e.g. "Tim Cook", "Colin Camerer", "Trump").
+### PER
+- Named individuals: "Tim Cook", "Trump", "Colin Camerer".
+- Include partial names and titles-with-names as they appear in the text.
 
-### LOC -- countries and major cities only
-- Use `LOC` for countries (e.g. "Canada", "America") and major cities \
-(e.g. "New York", "San Francisco", "Louisville", "Miami").
-- Do **NOT** use `LOC` for U.S. state names, continents, or regions. \
-Classify those as `MISC` instead (e.g. "Florida" -> MISC, "Alabama" -> MISC).
+### LOC
+- Countries: Canada, America, China.
+- Cities: New York, San Francisco, Louisville, Miami.
+- Other well-known geographic locations: Wall Street, Silicon Valley, Mars.
+- Note: U.S. state names and sub-national regions (California, Florida, \
+British Columbia) **can be LOC or MISC** depending on context. Use LOC when \
+the state is used as a geographic reference; use MISC when it modifies \
+something else (e.g. "Florida man", "California law").
 
-### MISC -- everything else
-- `MISC` is the default category for all other named entities, including:
-  - Product names (iPhone, Apple Watch Series 2, MacBook Pro)
-  - Technology and platform names (Bluetooth, Android, iOS, Snapchat)
-  - Consumer brands that are not major publicly traded companies \
-(Kickstarter, Beats, Parkside)
-  - Nationalities and demonyms (Chinese, American, Democratic)
-  - U.S. state names and regions (Florida, Alabama, Silicon Valley)
-  - Any other proper noun that does not fit ORG, PER, or LOC
+### MISC
+- Product names: iPhone, Apple Watch Series 2, MacBook Pro.
+- Technology and platform names: Bluetooth, Android, iOS.
+- Consumer brands: Beats, Parkside, Kickstarter.
+- Nationalities and demonyms: Chinese, American, Republican, Democratic.
+- Laws, events, awards, and other proper nouns not fitting above categories.
 
 ## Extraction Scope
 
-Extract only clearly identifiable named entities. **Skip** the following:
-- Universities, research labs, and academic institutions
-- Courts, government agencies, and regulatory bodies
-- Academic journals and publications
-- Generic descriptors, adjectives, dates, and fragmentary text
-- Color names, model numbers in isolation, and minor references
+Be **comprehensive**. Extract every distinct named entity you can identify, \
+including:
+- Company names and their ticker symbols (as separate entities).
+- Named individuals (even if only a last name like "Trump").
+- Geographic locations.
+- Product names, brand names, technology names.
+- Nationalities, demonyms, political affiliations.
 
-Focus on: publicly traded companies, named individuals, key geographic \
-references, and prominent product/brand/technology names.
+**Skip** only: generic descriptors, common nouns, dates, numbers in isolation.
+
+## Word Form Rules
+
+**Use the shortest natural form** of each entity as it appears in the text:
+- Write "Apple" not "Apple Inc" (unless "Apple Inc" is the exact surface form used).
+- Write "Google" not "Google LLC".
+- Write "Verizon" not "Verizon Communications Inc".
+- Preserve original capitalisation.
+- When the same entity appears multiple times, include it **only once**.
 
 ## mentioned_companies
 
-- List the **ticker symbols** only for entities you classified as `ORG`.
-- Include a ticker if it appears explicitly in the article text (e.g. in \
-parentheses like ``(AAPL)``), or if you resolve it via ``google_search``.
-- Only include tickers for companies that are well-known and clearly \
-identifiable as publicly traded.
+- List ticker symbols for `ORG` entities that are publicly traded.
+- Include a ticker if it appears explicitly in the article text, or if you \
+resolve it via the ``lookup_ticker`` tool.
+- **Only include tickers when that company's ticker appears explicitly in the \
+article text** (e.g. ``(AAPL)``, ``GOOG``, ``VZ``). If the article only \
+mentions the company name and not a ticker, include the company as an ORG \
+entity but **do not** add a ticker to ``mentioned_companies`` unless the \
+ticker symbol literally appears in the article.
 
-## Tool-Calling Protocol (google_search)
+## Tool-Calling Protocol (lookup_ticker)
 
-Follow these steps **in order**:
+1. Scan the article for `ORG` entities (publicly traded companies).
+2. For each ORG, call ``lookup_ticker(company_name)`` with **just the company \
+name** (e.g. "Apple", "Wells Fargo") -- not a full search query.
+3. Use the returned ticker as the ``normalized`` value for that entity.
+4. After all lookups, produce your final JSON.
 
-1. **Scan** the article and identify every distinct `ORG` entity (publicly \
-traded companies only, per the rules above).
-2. **For each ORG whose ticker does NOT already appear in the article text**, \
-call ``google_search(query)`` to resolve its ticker.
-3. **After ALL searches are complete**, produce your final JSON output.
-
-### Query format examples
-- ``"Apple Inc" stock ticker symbol`` -> expect AAPL
-- ``"Wells Fargo" NYSE ticker`` -> expect WFC
-- ``"Netflix" NASDAQ ticker symbol`` -> expect NFLX
-
-### Interpreting search results
-- Use the ``summary`` and ``sources`` titles to identify **one** unambiguous \
-ticker symbol.
-- If the results are ambiguous or the company is not publicly listed, set \
-``normalized`` to ``null`` and do NOT add it to ``mentioned_companies``.
-- Do **NOT** invent ticker symbols.
-
-### Do NOT search for
-- Universities, research labs, academic journals
-- Cities, countries, geographic regions
-- Courts, regulators, government agencies
-- Individual people
-- Consumer brands that are not major publicly traded companies
+### Do NOT look up
+- Universities, research labs, academic journals.
+- Cities, countries, geographic regions.
+- Courts, regulators, government agencies.
+- Individual people.
+- Consumer brands that are not publicly traded.
 
 ### Critical constraints
-- Complete ALL ``google_search`` calls BEFORE producing your final JSON.
+- Complete ALL lookups BEFORE producing your final JSON.
 - Do NOT output partial JSON between tool calls.
 
-## named_entities format
+## Output Format
 
-For each entity, produce an object with:
-
-| Field          | Description |
-|----------------|-------------|
-| `entity_group` | One of `ORG`, `PER`, `LOC`, `MISC` per the rules above. |
-| `word`         | The entity text **exactly as it appears** in the source. |
-| `normalized`   | Ticker symbol for `ORG` entities (from text or search). Use `null` for all other entities. |
-
-### Additional guidelines
-- Preserve the original surface form in `word`; do not alter capitalisation.
-- When the same entity appears multiple times, include it **only once**.
-- Do not fabricate entities that are not in the text.
-
-## Output
-
-Your final response must be a **single JSON object** with exactly this structure \
-(no other prose, markdown fences, or commentary):
+Your final response must be a **single JSON object** (no prose, no markdown \
+fences, no commentary):
 
 ```
 {
@@ -161,21 +145,26 @@ Your final response must be a **single JSON object** with exactly this structure
   "named_entities": [
     {"entity_group": "ORG", "word": "Apple", "normalized": "AAPL"},
     {"entity_group": "ORG", "word": "AAPL", "normalized": "AAPL"},
+    {"entity_group": "ORG", "word": "Google", "normalized": "GOOGL"},
+    {"entity_group": "ORG", "word": "GOOGL", "normalized": "GOOGL"},
     {"entity_group": "PER", "word": "Tim Cook", "normalized": null},
     {"entity_group": "LOC", "word": "New York", "normalized": null},
+    {"entity_group": "LOC", "word": "California", "normalized": null},
     {"entity_group": "MISC", "word": "iPhone", "normalized": null},
-    {"entity_group": "MISC", "word": "Florida", "normalized": null},
-    {"entity_group": "MISC", "word": "American", "normalized": null}
+    {"entity_group": "MISC", "word": "American", "normalized": null},
+    {"entity_group": "MISC", "word": "Bluetooth", "normalized": null},
+    {"entity_group": "MISC", "word": "Democratic", "normalized": null}
   ]
 }
 ```
 
 Field rules:
-- ``mentioned_companies``: array of strings (ticker symbols for ORG entities only).
+- ``mentioned_companies``: array of ticker symbol strings. Only include \
+tickers that appear literally in the article text.
 - ``named_entities``: array of objects, each with:
-  - ``entity_group``: one of ``"ORG"``, ``"PER"``, ``"LOC"``, ``"MISC"`` (no other values).
-  - ``word``: string, exact surface form from the article.
-  - ``normalized``: string (ticker symbol) for ORG entities, or ``null`` for all others.
+  - ``entity_group``: one of ``"ORG"``, ``"PER"``, ``"LOC"``, ``"MISC"``.
+  - ``word``: shortest natural surface form from the article.
+  - ``normalized``: ticker symbol string for ORG entities, or ``null``.
 """
 
 
@@ -187,6 +176,7 @@ def create_entity_extraction_agent(
     model: str | None = None,
     temperature: float | None = None,
     thinking_budget: int = 2048,
+    use_ticker_cache: bool = True,
 ) -> LlmAgent:
     """Create a configured entity extraction agent.
 
@@ -204,17 +194,28 @@ def create_entity_extraction_agent(
         Sampling temperature.
     thinking_budget : int, default 2048
         Token budget for the model's thinking phase.
+    use_ticker_cache : bool, default True
+        When True, use a local ticker cache (with Google Search fallback)
+        instead of pure Google Search. New discoveries are appended to
+        ``nasdaq_tickers.json``.
 
     Returns
     -------
     LlmAgent
-        Configured entity extraction agent with Google Search. JSON structure
-        is enforced via prompt-embedded schema and example. Post-hoc parsing
-        fallbacks in ``run_entity_extraction`` provide defence-in-depth.
+        Configured entity extraction agent. JSON structure is enforced via
+        prompt-embedded schema and example. Post-hoc parsing fallbacks in
+        ``run_entity_extraction`` provide defence-in-depth.
     """
     config = Configs()  # type: ignore[call-arg]
-    search_tool = create_google_search_tool(config)
     resolved_model = model or config.default_worker_model
+
+    if use_ticker_cache:
+        from aieng.agent_evals.entity_extraction.ticker_cache import create_ticker_lookup_tool
+
+        tools = [create_ticker_lookup_tool()]
+    else:
+        search_tool = create_google_search_tool(config)
+        tools = [search_tool]
 
     thinking_config = None
     if thinking_budget > 0:
@@ -222,12 +223,14 @@ def create_entity_extraction_agent(
         if "gemini-2.5" in model_lower or "gemini-3" in model_lower:
             thinking_config = ThinkingConfig(thinking_budget=thinking_budget)
 
+    prompt = instructions or EXTRACTION_PROMPT
+
     return LlmAgent(
         name=name,
         description=description or _DEFAULT_AGENT_DESCRIPTION,
         model=resolved_model,
-        instruction=instructions or EXTRACTION_PROMPT,
-        tools=[search_tool],
+        instruction=prompt,
+        tools=tools,
         generate_content_config=GenerateContentConfig(
             temperature=temperature,
             thinking_config=thinking_config,
@@ -331,9 +334,27 @@ def _parse_entity_output(raw: str) -> EntityExtractionOutput:
     )
 
 
-async def run_entity_extraction(title: str, maintext: str) -> EntityExtractionOutput:
-    """Run the entity extraction agent on one article and return structured output."""
-    agent = create_entity_extraction_agent()
+async def run_entity_extraction(
+    title: str,
+    maintext: str,
+    *,
+    use_ticker_cache: bool = True,
+) -> EntityExtractionOutput:
+    """Run the entity extraction agent on one article and return structured output.
+
+    Parameters
+    ----------
+    title : str
+        Article headline.
+    maintext : str
+        Article body text.
+    use_ticker_cache : bool, default True
+        When True, use the local ticker cache with Google Search fallback.
+        New discoveries are appended to ``nasdaq_tickers.json``.
+    """
+    agent = create_entity_extraction_agent(
+        use_ticker_cache=use_ticker_cache,
+    )
     session_service = InMemorySessionService()
     runner = Runner(
         app_name=agent.name,
