@@ -59,13 +59,14 @@ Classify every extracted entity into exactly one of these four groups:
 ### ORG
 - Publicly traded companies: Apple, Google, Amazon, Netflix, Verizon.
 - Stock ticker symbols that appear literally in the article: AAPL, GOOG, VZ.
-- Other organisations: newspapers, media companies, sports teams.
 - Do **NOT** include: universities, research labs, government agencies, courts, \
-regulatory bodies, or academic journals.
+regulatory bodies, academic journals, non-profit organisations, or generic \
+industry terms.
 
 ### PER
-- Named individuals: "Tim Cook", "Trump", "Colin Camerer".
-- Include partial names and titles-with-names as they appear in the text.
+- Named individuals mentioned by name: "Tim Cook", "Trump", "Colin Camerer".
+- Include last-name-only references (e.g. "Trump") if the person is clearly \
+identified.
 
 ### LOC
 - Countries: Canada, America, China.
@@ -81,19 +82,26 @@ something else (e.g. "Florida man", "California law").
 - Technology and platform names: Bluetooth, Android, iOS.
 - Consumer brands: Beats, Parkside, Kickstarter.
 - Nationalities and demonyms: Chinese, American, Republican, Democratic.
-- Laws, events, awards, and other proper nouns not fitting above categories.
 
 ## Extraction Scope
 
-Be **comprehensive**. Extract every distinct named entity you can identify, \
-including:
-- Company names and their ticker symbols (as separate entities).
-- Named individuals (even if only a last name like "Trump").
-- Geographic locations.
-- Product names, brand names, technology names.
-- Nationalities, demonyms, political affiliations.
+Be **selective** -- only extract entities that a standard NER tagger would \
+confidently tag. Focus on the **most prominent** named entities in the article.
 
-**Skip** only: generic descriptors, common nouns, dates, numbers in isolation.
+**Extract:**
+- Companies and their ticker symbols (as separate entities).
+- Named individuals central to the story.
+- Geographic locations explicitly named.
+- Specific product names, brand names, and well-known technology names.
+- Nationalities and demonyms used as proper adjectives.
+
+**Do NOT extract:**
+- Generic descriptors, common nouns, adjectives, dates, or numbers.
+- Job titles, roles, or occupations on their own (e.g. "CEO", "analyst").
+- Vague or generic references ("the company", "the government", "officials").
+- Organisations that are not companies (universities, courts, agencies, NGOs).
+- Industry jargon or technical terms that are not proper nouns.
+- Entities mentioned only in passing or in boilerplate/footer text.
 
 ## Word Form Rules
 
@@ -141,19 +149,14 @@ fences, no commentary):
 
 ```
 {
-  "mentioned_companies": ["AAPL", "GOOGL"],
+  "mentioned_companies": ["AAPL"],
   "named_entities": [
     {"entity_group": "ORG", "word": "Apple", "normalized": "AAPL"},
     {"entity_group": "ORG", "word": "AAPL", "normalized": "AAPL"},
-    {"entity_group": "ORG", "word": "Google", "normalized": "GOOGL"},
-    {"entity_group": "ORG", "word": "GOOGL", "normalized": "GOOGL"},
     {"entity_group": "PER", "word": "Tim Cook", "normalized": null},
     {"entity_group": "LOC", "word": "New York", "normalized": null},
-    {"entity_group": "LOC", "word": "California", "normalized": null},
     {"entity_group": "MISC", "word": "iPhone", "normalized": null},
-    {"entity_group": "MISC", "word": "American", "normalized": null},
-    {"entity_group": "MISC", "word": "Bluetooth", "normalized": null},
-    {"entity_group": "MISC", "word": "Democratic", "normalized": null}
+    {"entity_group": "MISC", "word": "American", "normalized": null}
   ]
 }
 ```
