@@ -101,8 +101,12 @@ def _read_csv_rows(path: Path, row_indices: list[int] | None = None, max_rows: i
 
 async def _run_agent_on_article(title: str, maintext: str) -> dict:
     """Run the entity extraction agent on a single article and return parsed output."""
-    result = await run_entity_extraction(title, maintext)
-    return result.model_dump()
+    response = await run_entity_extraction(title, maintext)
+    return {
+        **response.output.model_dump(),
+        "_duration_ms": response.total_duration_ms,
+        "_token_usage": response.token_usage,
+    }
 
 
 def _display_result(result: dict, title: str, idx: int | None = None, total: int | None = None) -> None:
@@ -140,6 +144,19 @@ def _display_result(result: dict, title: str, idx: int | None = None, total: int
         console.print(table)
     else:
         console.print("  [dim]No named entities extracted.[/dim]")
+
+    duration_ms = result.get("_duration_ms")
+    token_usage = result.get("_token_usage")
+    if duration_ms is not None:
+        parts = [f"completed in {duration_ms}ms"]
+        if token_usage is not None:
+            parts.append(
+                f"tokens — prompt: {token_usage.total_prompt_tokens}, "
+                f"completion: {token_usage.total_completion_tokens}, "
+                f"total: {token_usage.total_tokens} "
+                f"(context: {token_usage.context_used_percent:.1f}% used)"
+            )
+        console.print(f"  [dim]{' | '.join(parts)}[/dim]")
 
     console.print()
 

@@ -100,6 +100,10 @@ class EntityExtractionResult(BaseModel):
     named_entities: list[dict[str, Any]] = Field(default_factory=list)
     duration_ms: int = 0
     error: str | None = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    context_used_percent: float = 0.0
 
 
 class SummarizationResult(BaseModel):
@@ -109,6 +113,10 @@ class SummarizationResult(BaseModel):
     summary: str = ""
     duration_ms: int = 0
     error: str | None = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    context_used_percent: float = 0.0
 
 
 class WorkflowResult(BaseModel):
@@ -199,6 +207,7 @@ async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExt
     we parse back into fields for the result model.
     """
     from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
+    from aieng.agent_evals.token_tracker import TokenTracker
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -218,10 +227,12 @@ async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExt
                 prompt = json.dumps({"title": article.title, "maintext": article.maintext})
                 content = types.Content(role="user", parts=[types.Part(text=prompt)])
 
+                token_tracker = TokenTracker()
                 final_text = ""
                 async for event in runner.run_async(
                     user_id="workflow", session_id=session.id, new_message=content
                 ):
+                    token_tracker.add_from_event(event)
                     if hasattr(event, "is_final_response") and event.is_final_response():
                         if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
                             for part in event.content.parts:
@@ -229,6 +240,7 @@ async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExt
                                     final_text = part.text
 
                 duration_ms = int((time.time() - start) * 1000)
+                u = token_tracker.usage
 
                 output: EntityExtractionOutput | None = None
                 if final_text.strip():
@@ -243,10 +255,15 @@ async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExt
                         mentioned_companies=output.mentioned_companies if output else [],
                         named_entities=[e.model_dump() for e in output.named_entities] if output else [],
                         duration_ms=duration_ms,
+                        total_prompt_tokens=u.total_prompt_tokens,
+                        total_completion_tokens=u.total_completion_tokens,
+                        total_tokens=u.total_tokens,
+                        context_used_percent=u.context_used_percent,
                     )
                 )
+                token_info = f", tokens: {u.total_tokens}" if u.total_tokens else ""
                 console.print(
-                    f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({duration_ms}ms)"
+                    f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({duration_ms}ms{token_info})"
                 )
             except Exception as exc:
                 duration_ms = int((time.time() - start) * 1000)
@@ -283,10 +300,29 @@ async def run_summarization(articles: list[ArticleRecord]) -> list[Summarization
                     session_id=f"workflow-{i}-{uuid.uuid4().hex[:8]}",
                 )
                 duration_ms = response.total_duration_ms or int((time.time() - start) * 1000)
+                token_fields: dict[str, Any] = {}
+                if response.token_usage:
+                    u = response.token_usage
+                    token_fields = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
                 results.append(
-                    SummarizationResult(article_index=i, summary=response.text, duration_ms=duration_ms)
+                    SummarizationResult(
+                        article_index=i,
+                        summary=response.text,
+                        duration_ms=duration_ms,
+                        **token_fields,
+                    )
                 )
-                console.print(f"  [blue]Summarization[/blue] article {i + 1}/{len(articles)} ({duration_ms}ms)")
+                token_info = (
+                    f", tokens: {token_fields.get('total_tokens', 0)}"
+                    if token_fields
+                    else ""
+                )
+                console.print(f"  [blue]Summarization[/blue] article {i + 1}/{len(articles)} ({duration_ms}ms{token_info})")
             except Exception as exc:
                 duration_ms = int((time.time() - start) * 1000)
                 logger.error(f"Summarization failed for article {i}: {exc}")
