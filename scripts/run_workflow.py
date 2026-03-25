@@ -25,7 +25,15 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from aieng.agent_evals.configs import Configs
+from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
+from aieng.agent_evals.evaluation.trace import flush_traces
+from aieng.agent_evals.langfuse import init_tracing
+from aieng.agent_evals.summarization import SummarizationAgent
 from dotenv import load_dotenv
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
@@ -50,8 +58,6 @@ def ensure_google_genai_env() -> None:
     ``GOOGLE_API_KEY=`` set an empty string; ``setdefault`` does not override those,
     which produced "Missing key inputs argument" even when another var had the key.
     """
-    from aieng.agent_evals.configs import Configs
-
     cfg = Configs()  # type: ignore[call-arg]
     key = cfg.openai_api_key.get_secret_value().strip()
     if not key:
@@ -191,17 +197,17 @@ def load_data(path: str, sample_size: int | None = None) -> list[ArticleRecord]:
 # ---------------------------------------------------------------------------
 
 
-async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExtractionResult]:
+async def run_entity_extraction(
+    articles: list[ArticleRecord], *, langfuse_tracing: bool = False
+) -> list[EntityExtractionResult]:
     """Run the entity extraction agent over all articles sequentially.
 
     Each article gets a fresh ADK session. The agent's ``output_schema`` is
     ``EntityExtractionOutput``, so the final response is structured JSON that
     we parse back into fields for the result model.
     """
-    from aieng.agent_evals.entity_extraction import EntityExtractionOutput, create_entity_extraction_agent
-    from google.adk.runners import Runner
-    from google.adk.sessions import InMemorySessionService
-    from google.genai import types
+    if langfuse_tracing:
+        init_tracing(service_name="EntityExtractionAgent")
 
     agent = create_entity_extraction_agent()
     session_service = InMemorySessionService()
@@ -261,15 +267,15 @@ async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExt
     return results
 
 
-async def run_summarization(articles: list[ArticleRecord]) -> list[SummarizationResult]:
+async def run_summarization(
+    articles: list[ArticleRecord], *, langfuse_tracing: bool = False
+) -> list[SummarizationResult]:
     """Run the summarization agent over all articles sequentially.
 
     Uses the ``SummarizationAgent`` which accepts ``(title, body)`` and
     returns a ``SummarizationResponse`` with ``.text`` and ``.total_duration_ms``.
     """
-    from aieng.agent_evals.summarization import SummarizationAgent
-
-    agent = SummarizationAgent()
+    agent = SummarizationAgent(langfuse_tracing=langfuse_tracing)
     results: list[SummarizationResult] = []
     try:
         for i, article in enumerate(articles):
@@ -310,6 +316,7 @@ async def run_pipeline(
     agents_to_run: list[str],
     *,
     parallel: bool = False,
+    langfuse_tracing: bool = False,
 ) -> tuple[list[EntityExtractionResult], list[SummarizationResult]]:
     """Run selected agent pipelines (sequential by default, optional parallel)."""
     entity_results: list[EntityExtractionResult] = []
@@ -317,16 +324,20 @@ async def run_pipeline(
 
     if not parallel:
         if "entity-extraction" in agents_to_run:
-            entity_results = await run_entity_extraction(articles)
+            entity_results = await run_entity_extraction(articles, langfuse_tracing=langfuse_tracing)
         if "summarization" in agents_to_run:
-            summarization_results = await run_summarization(articles)
+            summarization_results = await run_summarization(articles, langfuse_tracing=langfuse_tracing)
         return entity_results, summarization_results
 
     tasks: dict[str, asyncio.Task[Any]] = {}
     if "entity-extraction" in agents_to_run:
-        tasks["entity-extraction"] = asyncio.create_task(run_entity_extraction(articles))
+        tasks["entity-extraction"] = asyncio.create_task(
+            run_entity_extraction(articles, langfuse_tracing=langfuse_tracing)
+        )
     if "summarization" in agents_to_run:
-        tasks["summarization"] = asyncio.create_task(run_summarization(articles))
+        tasks["summarization"] = asyncio.create_task(
+            run_summarization(articles, langfuse_tracing=langfuse_tracing)
+        )
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
@@ -454,6 +465,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run entity extraction and summarization concurrently (default: run one after the other)",
     )
+    parser.add_argument(
+        "--langfuse-trace",
+        action="store_true",
+        help="Enable Langfuse tracing via OpenTelemetry for both agents",
+    )
     return parser
 
 
@@ -465,10 +481,15 @@ async def async_main(args: argparse.Namespace) -> None:
     articles = load_data(args.data_file, args.sample_size)
     console.print(f"  Loaded {len(articles)} articles")
 
+    langfuse_tracing = getattr(args, "langfuse_trace", False)
+
     console.print(f"\n[bold]Running agents:[/bold] {', '.join(args.agents)}")
     entity_results, summarization_results = await run_pipeline(
-        articles, args.agents, parallel=args.parallel
+        articles, args.agents, parallel=args.parallel, langfuse_tracing=langfuse_tracing
     )
+
+    if langfuse_tracing:
+        flush_traces()
 
     if entity_results:
         evaluate_entity_extraction(entity_results, articles)

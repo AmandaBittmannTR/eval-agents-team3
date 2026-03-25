@@ -63,6 +63,7 @@ uv run python scripts/run_workflow.py --output-dir my_outputs
 | `--output-dir` | `outputs` | Directory for the JSON results file. |
 | `--agents` | `entity-extraction summarization` | One or both of: `entity-extraction`, `summarization`. |
 | `--parallel` | off | Run the two pipelines concurrently instead of one after the other. |
+| `--langfuse-trace` | off | Enable Langfuse tracing via OpenTelemetry for both agents. |
 
 ### Input data format
 
@@ -89,4 +90,4 @@ The `outputs/` directory is listed in `.gitignore` at the repo root.
 
 ### What is not implemented yet
 
-Evaluation metrics (code-based entity scores, LLM-as-a-judge for summaries) and Langfuse wiring are placeholders; the script is focused on **running agents and capturing outputs**.
+Evaluation metrics (code-based entity scores, LLM-as-a-judge for summaries) are placeholders; the script is focused on **running agents and capturing outputs**. Langfuse tracing is available via `--langfuse-trace`.

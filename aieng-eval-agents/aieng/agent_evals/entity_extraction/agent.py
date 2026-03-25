@@ -9,6 +9,14 @@ The returned agent is a Google ADK ``LlmAgent`` configured to:
 - Extract named entities and mentioned companies.
 - Return structured output conforming to ``EntityExtractionOutput``.
 
+Langfuse tracing
+~~~~~~~~~~~~~~~~
+``run_entity_extraction`` accepts ``langfuse_tracing=True`` to initialize
+OpenTelemetry tracing via Langfuse before the ADK runner starts. If you build
+a custom ``Runner`` from ``create_entity_extraction_agent()`` instead, call
+``from aieng.agent_evals.langfuse import init_tracing; init_tracing()`` once
+before the first ``run_async`` to enable tracing.
+
 Examples
 --------
 >>> from aieng.agent_evals.entity_extraction.agent import create_entity_extraction_agent
@@ -128,8 +136,27 @@ def create_entity_extraction_agent(
     )
 
 
-async def run_entity_extraction(title: str, maintext: str) -> EntityExtractionOutput:
-    """Run the entity extraction agent on one article and return structured output."""
+async def run_entity_extraction(
+    title: str, maintext: str, *, langfuse_tracing: bool = False
+) -> EntityExtractionOutput:
+    """Run the entity extraction agent on one article and return structured output.
+
+    Parameters
+    ----------
+    title : str
+        Article headline.
+    maintext : str
+        Full article body.
+    langfuse_tracing : bool, default False
+        Whether to enable Langfuse tracing via OpenTelemetry. When ``True``,
+        ``init_tracing`` is called before the ADK runner is created, and traces
+        are flushed after the run completes.
+    """
+    if langfuse_tracing:
+        from aieng.agent_evals.langfuse import init_tracing  # noqa: PLC0415
+
+        init_tracing(service_name="EntityExtractionAgent")
+
     agent = create_entity_extraction_agent()
     session_service = InMemorySessionService()
     runner = Runner(
@@ -159,3 +186,7 @@ async def run_entity_extraction(title: str, maintext: str) -> EntityExtractionOu
             return EntityExtractionOutput.model_validate(json.loads(final_text))
     finally:
         await runner.close()
+        if langfuse_tracing:
+            from aieng.agent_evals.evaluation.trace import flush_traces  # noqa: PLC0415
+
+            flush_traces()

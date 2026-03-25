@@ -174,8 +174,14 @@ async def cmd_run(
     title: str | None = None,
     maintext: str | None = None,
     show_ground_truth: bool = False,
+    langfuse_tracing: bool = False,
 ) -> int:
     """Run entity extraction on articles."""
+    if langfuse_tracing:
+        from aieng.agent_evals.langfuse import init_tracing  # noqa: PLC0415
+
+        init_tracing(service_name="EntityExtractionAgent")
+
     display_banner()
 
     if title and maintext:
@@ -215,6 +221,12 @@ async def cmd_run(
             _display_ground_truth(row)
 
     console.print(f"[bold green]Done — processed {len(rows)} article(s)[/bold green]")
+
+    if langfuse_tracing:
+        from aieng.agent_evals.evaluation.trace import flush_traces  # noqa: PLC0415
+
+        flush_traces()
+
     return 0
 
 
@@ -269,6 +281,7 @@ def main() -> int:
     run_parser.add_argument("--title", type=str, help="Article title (inline mode)")
     run_parser.add_argument("--maintext", type=str, help="Article body text (inline mode)")
     run_parser.add_argument("--ground-truth", action="store_true", help="Show ground-truth from CSV for comparison")
+    run_parser.add_argument("--langfuse-trace", action="store_true", help="Enable Langfuse tracing via OpenTelemetry")
 
     args = parser.parse_args()
 
@@ -286,6 +299,7 @@ def main() -> int:
                 title=args.title,
                 maintext=args.maintext,
                 show_ground_truth=args.ground_truth,
+                langfuse_tracing=args.langfuse_trace,
             )
         )
 
