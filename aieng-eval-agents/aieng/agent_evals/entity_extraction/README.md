@@ -24,7 +24,7 @@ Useful flags:
 | `--rows N` | Process the first `N` data rows (after the header). |
 | `--row-index i j …` | Process only those zero-based row indices (overrides the “first N rows” behaviour). |
 | `--title` / `--maintext` | Run on a single inline article instead of a file. |
-| `--langfuse-trace` | Enable Langfuse tracing via OpenTelemetry (off by default). |
+| `--traces` | Enable Langfuse tracing via OpenTelemetry (off by default). |
 | `--ground-truth` | After each article, print the CSV’s label columns for side-by-side comparison. |
 
 The banner shows the package version and the **worker model** from `Configs` (what actually runs the LLM).

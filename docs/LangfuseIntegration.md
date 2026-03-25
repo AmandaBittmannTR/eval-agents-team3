@@ -80,8 +80,8 @@ Both agents use the same `init_tracing()` OTLP path described above, but tracing
 |-------|---------------|
 | **SummarizationAgent** | `SummarizationAgent(langfuse_tracing=True)` or via `SummarizationAgentManager(langfuse_tracing=True)` |
 | **Entity extraction** | `run_entity_extraction(title, maintext, langfuse_tracing=True)` |
-| **Entity extraction CLI** | `entity-extract run --langfuse-trace ...` |
-| **Workflow script** | `python scripts/run_workflow.py --langfuse-trace` (applies to both agents) |
+| **Entity extraction CLI** | `entity-extract run --traces ...` |
+| **Workflow script** | `python scripts/run_workflow.py --traces` (applies to both agents and evaluation uploads) |
 
 `create_entity_extraction_agent()` is a pure factory with no tracing side effects. If you build a custom `Runner` from it, call `init_tracing()` yourself before the first `run_async`.
 

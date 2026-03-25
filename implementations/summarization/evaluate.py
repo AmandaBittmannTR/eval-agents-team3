@@ -86,7 +86,7 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
 
     try:
         agent = SummarizationAgent()
-        response = await agent.summarize_async(title=title, maintext=maintext)
+        response = await agent.summarize_async(title=title, body=maintext)
         logger.info(f"Agent completed: {len(response.text)} chars, {response.total_duration_ms}ms")
 
         # Attach rich execution data to the span metadata

@@ -281,7 +281,7 @@ def main() -> int:
     run_parser.add_argument("--title", type=str, help="Article title (inline mode)")
     run_parser.add_argument("--maintext", type=str, help="Article body text (inline mode)")
     run_parser.add_argument("--ground-truth", action="store_true", help="Show ground-truth from CSV for comparison")
-    run_parser.add_argument("--langfuse-trace", action="store_true", help="Enable Langfuse tracing via OpenTelemetry")
+    run_parser.add_argument("--traces", action="store_true", help="Enable Langfuse tracing via OpenTelemetry")
 
     args = parser.parse_args()
 
@@ -299,7 +299,7 @@ def main() -> int:
                 title=args.title,
                 maintext=args.maintext,
                 show_ground_truth=args.ground_truth,
-                langfuse_tracing=args.langfuse_trace,
+                langfuse_tracing=args.traces,
             )
         )
 
