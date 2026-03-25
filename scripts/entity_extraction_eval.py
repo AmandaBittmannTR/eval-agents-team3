@@ -14,6 +14,10 @@ another count, or ``--all`` to run the full dataset (slow).
 API keys are read from the project ``.env`` at the repo root (not the process cwd), matching
 other bootcamp scripts. Set ``GEMINI_API_KEY`` and/or ``OPENAI_API_KEY`` as in ``.env.example``;
 if only ``OPENAI_API_KEY`` is set, it is mirrored to ``GEMINI_API_KEY`` for ADK.
+
+Use ``--langfuse`` to send the same per-article and aggregate metrics to Langfuse as scores on a
+single trace (requires ``LANGFUSE_PUBLIC_KEY``, ``LANGFUSE_SECRET_KEY``, and optional
+``LANGFUSE_HOST`` in ``.env``).
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -351,6 +356,131 @@ def run_eval(
 
 
 # ---------------------------------------------------------------------------
+# Langfuse upload
+# ---------------------------------------------------------------------------
+
+
+def _clip_text(text: str, max_chars: int) -> str:
+    t = text.strip()
+    if len(t) <= max_chars:
+        return t
+    return f"{t[: max_chars - 3]}..."
+
+
+def push_entity_extraction_eval_to_langfuse(
+    *,
+    rows: list[dict[str, Any]],
+    aggregates: dict[str, float],
+    ground: dict[str, dict[str, str]],
+    agent_outputs: dict[str, dict[str, Any]],
+    run_metadata: dict[str, Any],
+) -> None:
+    """Send one Langfuse trace with per-article spans, scores, and aggregate trace scores."""
+    from aieng.agent_evals.async_client_manager import AsyncClientManager
+
+    manager = AsyncClientManager.get_instance()
+    cfg = manager.configs
+    if not cfg.langfuse_public_key or not cfg.langfuse_secret_key:
+        logger.warning(
+            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must both be set; skipping Langfuse upload.",
+        )
+        return
+
+    lf = manager.langfuse_client
+    try:
+        if not lf.auth_check():
+            logger.warning("Langfuse authentication failed; skipping upload.")
+            return
+    except Exception:
+        logger.exception("Langfuse auth_check failed; skipping upload.")
+        return
+
+    session_id = f"entity_extraction_eval-{uuid.uuid4().hex[:12]}"
+    trace_id_for_url: str | None = None
+
+    try:
+        with lf.start_as_current_span(
+            name="entity_extraction_eval",
+            metadata=run_metadata,
+            input={
+                "data_path": run_metadata.get("data_path"),
+                "offset": run_metadata.get("offset"),
+                "limit": run_metadata.get("limit"),
+                "all": run_metadata.get("all"),
+                "n_articles": len(rows),
+            },
+        ) as root:
+            root.update_trace(
+                name="Entity extraction eval",
+                session_id=session_id,
+                tags=["entity_extraction_eval", "bootcamp"],
+            )
+            for row in rows:
+                aid = row["article_id"]
+                ref = ground[aid]
+                output = agent_outputs.get(aid, {})
+                with root.start_as_current_span(
+                    name="extract_entities",
+                    metadata={"article_id": aid},
+                    input={
+                        "article_id": aid,
+                        "title": _clip_text(ref["title"], 500),
+                        "maintext": _clip_text(ref["maintext"], 8000),
+                    },
+                    output={
+                        "mentioned_companies": output.get("mentioned_companies", []),
+                        "named_entities": output.get("named_entities", []),
+                    },
+                ) as art_span:
+                    art_span.update(
+                        metadata={
+                            "expected_companies": _clip_text(ref["mentioned_companies"], 2000),
+                            "expected_entities": _clip_text(ref["named_entities"], 4000),
+                        },
+                    )
+                    art_span.score(
+                        name="companies_f1",
+                        value=float(row["companies_f1"]),
+                        data_type="NUMERIC",
+                    )
+                    art_span.score(
+                        name="entities_f1",
+                        value=float(row["entities_f1"]),
+                        data_type="NUMERIC",
+                    )
+                    art_span.score(
+                        name="word_f1",
+                        value=float(row["word_f1"]),
+                        data_type="NUMERIC",
+                    )
+
+            root.update(output={"aggregates": aggregates})
+            for metric_name in (
+                "avg_companies_f1",
+                "avg_entities_f1",
+                "avg_word_f1",
+                "macro_companies_f1",
+                "macro_entities_f1",
+                "macro_word_f1",
+                "n_matched",
+            ):
+                root.score_trace(
+                    name=metric_name,
+                    value=float(aggregates[metric_name]),
+                    data_type="NUMERIC",
+                )
+            trace_id_for_url = lf.get_current_trace_id()
+
+        lf.flush()
+        if trace_id_for_url:
+            url = lf.get_trace_url(trace_id=trace_id_for_url)
+            if url:
+                logger.info("Langfuse trace: %s", url)
+    except Exception:
+        logger.exception("Failed to upload entity extraction eval to Langfuse")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -393,6 +523,14 @@ def main(argv: list[str] | None = None) -> int:
         "--quiet",
         action="store_true",
         help="Only print aggregate JSON, not per-row table.",
+    )
+    parser.add_argument(
+        "--langfuse",
+        action="store_true",
+        help=(
+            "Upload this run to Langfuse: one trace with per-article spans/scores and aggregate "
+            "trace scores (requires LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST in .env)."
+        ),
     )
     args = parser.parse_args(argv)
     article_limit: int | None = None if args.all else args.limit
@@ -450,6 +588,20 @@ def main(argv: list[str] | None = None) -> int:
             for row in per_item:
                 f.write(json.dumps(row) + "\n")
         logger.info("Per-item scores written to %s", out_path)
+
+    if args.langfuse:
+        push_entity_extraction_eval_to_langfuse(
+            rows=per_item,
+            aggregates=aggregates,
+            ground=ground,
+            agent_outputs=agent_outputs,
+            run_metadata={
+                "data_path": str(data_path),
+                "offset": args.offset,
+                "limit": None if args.all else args.limit,
+                "all": args.all,
+            },
+        )
 
     return 0
 
