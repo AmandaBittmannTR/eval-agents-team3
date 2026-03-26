@@ -29,6 +29,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from collections.abc import Iterator
@@ -172,18 +173,40 @@ def parse_named_entities(raw: Any) -> list[dict[str, Any]]:
     ]
 
 
+_NORM_PUNCT_RE = re.compile(r"[.\,;:!?'\"()\[\]{}/\\]+")
+_NORM_SPACE_RE = re.compile(r"\s+")
+
+
+def _norm_word(raw: str) -> str:
+    """Normalize an entity word for comparison.
+
+    Handles BERT ``##`` subword artifacts, stray punctuation between tokens
+    (e.g. ``Alphabet. Inc`` → ``alphabet inc``), and collapses whitespace.
+    """
+    w = raw.replace("##", "")
+    w = _NORM_PUNCT_RE.sub(" ", w)
+    w = _NORM_SPACE_RE.sub(" ", w).strip().lower()
+    return w
+
+
 def normalize_entity_set(entities: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Set of ``(entity_group, word)`` tuples for set-based comparison."""
-    return {
-        (str(e.get("entity_group", "MISC")).upper(), str(e.get("word", "")))
-        for e in entities
-        if e.get("word")
-    }
+    """Set of ``(entity_group, normalized_word)`` tuples for strict comparison."""
+    result: set[tuple[str, str]] = set()
+    for e in entities:
+        w = _norm_word(str(e.get("word", "")))
+        if w:
+            result.add((str(e.get("entity_group", "MISC")).upper(), w))
+    return result
+
+
+def normalize_entity_set_relaxed(entities: list[dict[str, Any]]) -> set[str]:
+    """Set of normalized words only (group-agnostic) for relaxed entity comparison."""
+    return {_norm_word(str(e.get("word", ""))) for e in entities if e.get("word")}
 
 
 def normalize_word_set(entities: list[dict[str, Any]]) -> set[str]:
-    """Set of entity words, ignoring entity_group."""
-    return {str(e.get("word", "")) for e in entities if e.get("word")}
+    """Set of normalized entity words, ignoring entity_group."""
+    return {_norm_word(str(e.get("word", ""))) for e in entities if e.get("word")}
 
 
 def _f1(precision: float, recall: float) -> float:
@@ -200,8 +223,16 @@ def _f1(precision: float, recall: float) -> float:
 
 async def run_entity_extraction_batch(
     articles: list[dict[str, Any]],
+    concurrency: int = 1,
 ) -> dict[str, dict[str, Any]]:
-    """Run ``run_entity_extraction`` on each article; return ``article_id -> output dict``."""
+    """Run ``run_entity_extraction`` on each article; return ``article_id -> output dict``.
+
+    Parameters
+    ----------
+    concurrency : int
+        Max number of articles to process in parallel.  ``1`` (default) means
+        sequential execution.
+    """
     from aieng.agent_evals.entity_extraction.agent import run_entity_extraction
 
     if not articles:
@@ -209,17 +240,29 @@ async def run_entity_extraction_batch(
         return {}
 
     results: dict[str, dict[str, Any]] = {}
-    for i, row in enumerate(articles):
+    sem = asyncio.Semaphore(concurrency)
+    total = len(articles)
+    counter = {"done": 0}
+
+    async def _process(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         article_id = row["article_id"]
         title = str(row.get("title") or "")
         maintext = str(row.get("maintext") or "")
-        logger.info("Extracting entities [%s/%s] %s", i + 1, len(articles), article_id)
-        try:
-            result = await run_entity_extraction(title=title, maintext=maintext)
-            results[article_id] = result.model_dump()
-        except Exception:
-            logger.exception("Entity extraction failed for %s", article_id)
-            results[article_id] = {"mentioned_companies": [], "named_entities": []}
+        async with sem:
+            try:
+                result = await run_entity_extraction(title=title, maintext=maintext)
+                out = result.model_dump(mode="json")
+            except Exception:
+                logger.exception("Entity extraction failed for %s", article_id)
+                out = {"mentioned_companies": [], "named_entities": []}
+            counter["done"] += 1
+            logger.info("Extracted [%s/%s] %s", counter["done"], total, article_id)
+            return article_id, out
+
+    tasks = [_process(row) for row in articles]
+    for article_id, output in await asyncio.gather(*tasks):
+        results[article_id] = output
+
     return results
 
 
@@ -248,8 +291,10 @@ def _score_item(
     co_f1 = _f1(co_precision, co_recall)
 
     predicted_entities = output.get("named_entities") or []
-    predicted_entity_set = normalize_entity_set(predicted_entities)
     expected_entities = parse_named_entities(ground.get("named_entities"))
+
+    # Strict entity match: (entity_group, word) tuples
+    predicted_entity_set = normalize_entity_set(predicted_entities)
     expected_entity_set = normalize_entity_set(expected_entities)
 
     ent_tp = predicted_entity_set & expected_entity_set
@@ -259,6 +304,17 @@ def _score_item(
     ent_recall = len(ent_tp) / len(expected_entity_set) if expected_entity_set else 0.0
     ent_f1 = _f1(ent_precision, ent_recall)
 
+    # Relaxed entity match: words only (group-agnostic)
+    pred_relaxed = normalize_entity_set_relaxed(predicted_entities)
+    exp_relaxed = normalize_entity_set_relaxed(expected_entities)
+    rel_tp = pred_relaxed & exp_relaxed
+    rel_fp = pred_relaxed - exp_relaxed
+    rel_fn = exp_relaxed - pred_relaxed
+    rel_precision = len(rel_tp) / len(pred_relaxed) if pred_relaxed else 0.0
+    rel_recall = len(rel_tp) / len(exp_relaxed) if exp_relaxed else 0.0
+    rel_f1 = _f1(rel_precision, rel_recall)
+
+    # Word-level overlap (individual words from multi-word entities)
     predicted_words = normalize_word_set(predicted_entities)
     expected_words = normalize_word_set(expected_entities)
     word_tp = predicted_words & expected_words
@@ -279,6 +335,12 @@ def _score_item(
         "entities_tp": len(ent_tp),
         "entities_fp": len(ent_fp),
         "entities_fn": len(ent_fn),
+        "entities_relaxed_precision": rel_precision,
+        "entities_relaxed_recall": rel_recall,
+        "entities_relaxed_f1": rel_f1,
+        "entities_relaxed_tp": len(rel_tp),
+        "entities_relaxed_fp": len(rel_fp),
+        "entities_relaxed_fn": len(rel_fn),
         "word_precision": word_precision,
         "word_recall": word_recall,
         "word_f1": word_f1,
@@ -309,6 +371,7 @@ def run_eval(
 
     co_tp_total = co_fp_total = co_fn_total = 0
     ent_tp_total = ent_fp_total = ent_fn_total = 0
+    rel_tp_total = rel_fp_total = rel_fn_total = 0
     word_matched_total = word_expected_total = word_predicted_total = 0
 
     for article_id, output, gt in iter_matched_pairs(ground, agent):
@@ -322,6 +385,9 @@ def run_eval(
         ent_tp_total += scores["entities_tp"]
         ent_fp_total += scores["entities_fp"]
         ent_fn_total += scores["entities_fn"]
+        rel_tp_total += scores["entities_relaxed_tp"]
+        rel_fp_total += scores["entities_relaxed_fp"]
+        rel_fn_total += scores["entities_relaxed_fn"]
         word_matched_total += scores["word_matched"]
         word_expected_total += scores["word_expected"]
         word_predicted_total += scores["word_predicted"]
@@ -334,6 +400,8 @@ def run_eval(
     macro_co_recall = co_tp_total / (co_tp_total + co_fn_total) if (co_tp_total + co_fn_total) else 0.0
     macro_ent_prec = ent_tp_total / (ent_tp_total + ent_fp_total) if (ent_tp_total + ent_fp_total) else 0.0
     macro_ent_recall = ent_tp_total / (ent_tp_total + ent_fn_total) if (ent_tp_total + ent_fn_total) else 0.0
+    macro_rel_prec = rel_tp_total / (rel_tp_total + rel_fp_total) if (rel_tp_total + rel_fp_total) else 0.0
+    macro_rel_recall = rel_tp_total / (rel_tp_total + rel_fn_total) if (rel_tp_total + rel_fn_total) else 0.0
     macro_word_prec = word_matched_total / word_predicted_total if word_predicted_total else 0.0
     macro_word_recall = word_matched_total / word_expected_total if word_expected_total else 0.0
 
@@ -341,6 +409,7 @@ def run_eval(
         "n_matched": float(n),
         "avg_companies_f1": sum(r["companies_f1"] for r in per_item) / n,
         "avg_entities_f1": sum(r["entities_f1"] for r in per_item) / n,
+        "avg_entities_relaxed_f1": sum(r["entities_relaxed_f1"] for r in per_item) / n,
         "avg_word_f1": sum(r["word_f1"] for r in per_item) / n,
         "macro_companies_precision": macro_co_prec,
         "macro_companies_recall": macro_co_recall,
@@ -348,6 +417,9 @@ def run_eval(
         "macro_entities_precision": macro_ent_prec,
         "macro_entities_recall": macro_ent_recall,
         "macro_entities_f1": _f1(macro_ent_prec, macro_ent_recall),
+        "macro_entities_relaxed_precision": macro_rel_prec,
+        "macro_entities_relaxed_recall": macro_rel_recall,
+        "macro_entities_relaxed_f1": _f1(macro_rel_prec, macro_rel_recall),
         "macro_word_precision": macro_word_prec,
         "macro_word_recall": macro_word_recall,
         "macro_word_f1": _f1(macro_word_prec, macro_word_recall),
@@ -530,6 +602,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Only print aggregate JSON, not per-row table.",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Max articles to process in parallel (default: 1 = sequential).",
+    )
+    parser.add_argument(
         "--langfuse",
         action="store_true",
         help=(
@@ -559,8 +637,14 @@ def main(argv: list[str] | None = None) -> int:
     if article_limit is not None:
         article_rows = article_rows[:article_limit]
 
-    logger.info("Running entity extraction on %d article(s)...", len(article_rows))
-    agent_outputs = asyncio.run(run_entity_extraction_batch(article_rows))
+    logger.info(
+        "Running entity extraction on %d article(s) (concurrency=%d)...",
+        len(article_rows),
+        args.concurrency,
+    )
+    agent_outputs = asyncio.run(
+        run_entity_extraction_batch(article_rows, concurrency=args.concurrency),
+    )
 
     if not agent_outputs:
         logger.error("No outputs produced (empty dataset after offset/limit or all calls failed).")
@@ -581,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{label}\t"
                 f"co_f1={row['companies_f1']:.4f}\t"
                 f"ent_f1={row['entities_f1']:.4f}\t"
+                f"ent_rel_f1={row['entities_relaxed_f1']:.4f}\t"
                 f"word_f1={row['word_f1']:.4f}",
             )
 
