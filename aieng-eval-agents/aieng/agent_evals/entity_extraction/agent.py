@@ -13,6 +13,14 @@ The returned agent is a Google ADK ``LlmAgent`` configured to:
   ``response_mime_type="application/json"`` can be used alongside tools in the
   current Gemini API). Post-hoc parsing fallbacks are retained as a safety net.
 
+Langfuse tracing
+~~~~~~~~~~~~~~~~
+``run_entity_extraction`` accepts ``langfuse_tracing=True`` to initialize
+OpenTelemetry tracing via Langfuse before the ADK runner starts. If you build
+a custom ``Runner`` from ``create_entity_extraction_agent()`` instead, call
+``from aieng.agent_evals.langfuse import init_tracing; init_tracing()`` once
+before the first ``run_async`` to enable tracing.
+
 Examples
 --------
 >>> from aieng.agent_evals.entity_extraction.agent import create_entity_extraction_agent
@@ -363,6 +371,7 @@ async def run_entity_extraction(
     maintext: str,
     *,
     use_ticker_cache: bool = True,
+    langfuse_tracing: bool = False,
 ) -> EntityExtractionResponse:
     """Run the entity extraction agent on one article and return structured output.
 
@@ -376,6 +385,10 @@ async def run_entity_extraction(
         When True, use the local ticker cache with Google Search fallback.
         New discoveries are appended to ``nasdaq_tickers.json``.
     """
+    if langfuse_tracing:
+        from aieng.agent_evals.langfuse import init_tracing  # noqa: PLC0415
+
+        init_tracing(service_name="EntityExtractionAgent")
     config = Configs()  # type: ignore[call-arg]
     agent = create_entity_extraction_agent(
         use_ticker_cache=use_ticker_cache,
@@ -418,3 +431,7 @@ async def run_entity_extraction(
         )
     finally:
         await runner.close()
+        if langfuse_tracing:
+            from aieng.agent_evals.evaluation.trace import flush_traces  # noqa: PLC0415
+
+            flush_traces()

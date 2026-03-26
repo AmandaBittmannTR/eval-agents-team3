@@ -474,7 +474,12 @@ def push_entity_extraction_eval_to_langfuse(
         logger.exception("Langfuse auth_check failed; skipping upload.")
         return
 
-    session_id = f"entity_extraction_eval-{uuid.uuid4().hex[:12]}"
+    session_id = run_metadata.get(
+        "run_id", f"entity_extraction_eval-{uuid.uuid4().hex[:12]}"
+    )
+    tags = ["entity_extraction_eval", "bootcamp"]
+    if run_metadata.get("source") == "workflow":
+        tags.append("Full Workflow Pipeline")
     trace_id_for_url: str | None = None
 
     try:
@@ -492,7 +497,7 @@ def push_entity_extraction_eval_to_langfuse(
             root.update_trace(
                 name="Entity extraction eval",
                 session_id=session_id,
-                tags=["entity_extraction_eval", "bootcamp"],
+                tags=tags,
             )
             for row in rows:
                 aid = row["article_id"]

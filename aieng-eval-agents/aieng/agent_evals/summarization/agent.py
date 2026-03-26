@@ -83,6 +83,8 @@ class SummarizationAgent:
         The model to use. If not provided, uses config.default_worker_model.
     thinking_budget : int, default 4096
         Token budget for the model's thinking phase.
+    langfuse_tracing : bool, default False
+        Whether to enable Langfuse tracing via OpenTelemetry.
 
     Examples
     --------
@@ -97,6 +99,7 @@ class SummarizationAgent:
         config: Configs | None = None,
         model: str | None = None,
         thinking_budget: int = 4096,
+        langfuse_tracing: bool = False,
     ) -> None:
         """Initialize the summarization agent.
 
@@ -108,9 +111,17 @@ class SummarizationAgent:
             The model to use. If not provided, uses config.default_worker_model.
         thinking_budget : int, default 4096
             Token budget for the model's thinking phase. Set to 0 to disable.
+        langfuse_tracing : bool, default False
+            Whether to enable Langfuse tracing via OpenTelemetry.
         """
         if config is None:
             config = Configs()  # type: ignore[call-arg]
+
+        self._langfuse_tracing = langfuse_tracing
+        if langfuse_tracing:
+            from aieng.agent_evals.langfuse import init_tracing  # noqa: PLC0415
+
+            init_tracing(service_name="SummarizationAgent")
 
         self.config = config
         self.model = model or config.default_worker_model
@@ -182,6 +193,10 @@ class SummarizationAgent:
     async def aclose(self) -> None:
         """Release the ADK runner (HTTP clients, background tasks)."""
         await self._runner.close()
+        if self._langfuse_tracing:
+            from aieng.agent_evals.evaluation.trace import flush_traces  # noqa: PLC0415
+
+            flush_traces()
 
     async def _get_or_create_session_async(self, session_id: str | None = None) -> str:
         """Get or create an ADK session for the given session ID."""
@@ -373,6 +388,8 @@ class SummarizationAgentManager:
     ----------
     config : Configs, optional
         Configuration object for client setup. If not provided, creates default.
+    langfuse_tracing : bool, default False
+        Whether to enable Langfuse tracing via OpenTelemetry.
 
     Examples
     --------
@@ -386,6 +403,7 @@ class SummarizationAgentManager:
     def __init__(
         self,
         config: Configs | None = None,
+        langfuse_tracing: bool = False,
     ) -> None:
         """Initialize the manager.
 
@@ -393,8 +411,11 @@ class SummarizationAgentManager:
         ----------
         config : Configs, optional
             Configuration object. If not provided, creates default config.
+        langfuse_tracing : bool, default False
+            Whether to enable Langfuse tracing via OpenTelemetry.
         """
         self._config = config
+        self._langfuse_tracing = langfuse_tracing
         self._agent: SummarizationAgent | None = None
         self._initialized = False
 
@@ -409,7 +430,9 @@ class SummarizationAgentManager:
     def agent(self) -> SummarizationAgent:
         """Get or create the summarization agent."""
         if self._agent is None:
-            self._agent = SummarizationAgent(config=self.config)
+            self._agent = SummarizationAgent(
+                config=self.config, langfuse_tracing=self._langfuse_tracing
+            )
             self._initialized = True
         return self._agent
 

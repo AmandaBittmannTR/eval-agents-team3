@@ -1,14 +1,16 @@
 """Workflow entry point for the Knowledge QA evaluation pipeline.
 
-Loads financial news articles from a CSV file, runs entity extraction and
-summarization agents (sequential by default; use ``--parallel`` for concurrent
-runs), collects structured results, and provides hooks for downstream evaluation.
+Loads financial news articles from a local CSV **or** a Langfuse dataset, runs
+entity extraction and/or summarization agents (parallel by default; use
+``--sequential`` for one-at-a-time), evaluates results automatically, and
+pushes evaluation scores to Langfuse when ``--traces`` is enabled.
 
 Usage
 -----
     python scripts/run_workflow.py
     python scripts/run_workflow.py --data-file data/transformed_data/2018_data.csv --sample-size 10
-    python scripts/run_workflow.py --agents entity-extraction
+    python scripts/run_workflow.py --dataset-name FinancialNews-2017 --sample-size 5
+    python scripts/run_workflow.py --agents entity-extraction --sequential
 """
 
 from __future__ import annotations
@@ -19,16 +21,26 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from aieng.agent_evals.configs import Configs
+from aieng.agent_evals.evaluation.trace import flush_traces
+from aieng.agent_evals.summarization import SummarizationAgent
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
+
+_EVAL_RUNNER_DIR = str(Path(__file__).resolve().parent.parent / "implementations" / "summarization")
+if _EVAL_RUNNER_DIR not in sys.path:
+    sys.path.insert(0, _EVAL_RUNNER_DIR)
+
+from eval_runner import run_entity_extraction_evals, run_summarization_evals  # noqa: E402
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -50,8 +62,6 @@ def ensure_google_genai_env() -> None:
     ``GOOGLE_API_KEY=`` set an empty string; ``setdefault`` does not override those,
     which produced "Missing key inputs argument" even when another var had the key.
     """
-    from aieng.agent_evals.configs import Configs
-
     cfg = Configs()  # type: ignore[call-arg]
     key = cfg.openai_api_key.get_secret_value().strip()
     if not key:
@@ -63,6 +73,7 @@ def ensure_google_genai_env() -> None:
 
 
 DEFAULT_DATA_FILE = "data/transformed_data/2017_data.csv"
+DEFAULT_DATASET_NAME = "FinancialNews-2017"
 DEFAULT_OUTPUT_DIR = "outputs"
 REQUIRED_COLUMNS = {"title", "maintext", "description", "mentioned_companies", "named_entities"}
 
@@ -194,55 +205,164 @@ def load_data(path: str, sample_size: int | None = None) -> list[ArticleRecord]:
     return records
 
 
+def load_data_from_langfuse(
+    dataset_name: str,
+    sample_size: int | None = None,
+) -> list[ArticleRecord]:
+    """Fetch articles from a Langfuse dataset.
+
+    Each dataset item is expected to have ``input.title``, ``input.maintext``,
+    and optionally ``input.description``.  Entity-extraction ground truth is
+    read from ``metadata.ground_truth_format`` (a JSON string with
+    ``mentioned_companies`` and ``named_entities`` keys).
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the Langfuse dataset.
+    sample_size : int, optional
+        If provided, only return the first *sample_size* records.
+    """
+    from aieng.agent_evals.async_client_manager import AsyncClientManager
+
+    manager = AsyncClientManager.get_instance()
+    lf = manager.langfuse_client
+    dataset = lf.get_dataset(dataset_name)
+
+    records: list[ArticleRecord] = []
+    for item in dataset.items:
+        input_data = item.input
+        if isinstance(input_data, str):
+            input_data = json.loads(input_data)
+
+        title = (input_data.get("title") or "") if isinstance(input_data, dict) else ""
+        maintext = (input_data.get("maintext") or "") if isinstance(input_data, dict) else ""
+        description = (input_data.get("description") or "") if isinstance(input_data, dict) else ""
+
+        mentioned_companies: list[str] = []
+        named_entities: list[dict[str, Any]] = []
+
+        metadata = item.metadata or {}
+        gt_raw = metadata.get("ground_truth_format")
+        if gt_raw:
+            gt = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
+            mentioned_companies = gt.get("mentioned_companies", [])
+            named_entities = gt.get("named_entities", [])
+
+        if not maintext.strip():
+            continue
+
+        records.append(
+            ArticleRecord(
+                title=str(title),
+                maintext=str(maintext),
+                description=str(description),
+                mentioned_companies=mentioned_companies if isinstance(mentioned_companies, list) else [],
+                named_entities=named_entities if isinstance(named_entities, list) else [],
+            )
+        )
+
+        if sample_size is not None and len(records) >= sample_size:
+            break
+
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Agent runners
 # ---------------------------------------------------------------------------
 
 
-async def run_entity_extraction(articles: list[ArticleRecord]) -> list[EntityExtractionResult]:
-    """Run the entity extraction agent over all articles sequentially."""
-    from aieng.agent_evals.entity_extraction.agent import run_entity_extraction as _extract
+async def run_entity_extraction(
+    articles: list[ArticleRecord], *, langfuse_tracing: bool = False,
+) -> list[EntityExtractionResult]:
+    """Run the entity extraction agent over all articles sequentially.
 
+    Delegates to ``agent.py``'s ``run_entity_extraction`` which handles
+    session management, robust JSON parsing, and token tracking internally.
+    Retries once on failure before recording an error.
+    """
+    from aieng.agent_evals.entity_extraction.agent import (
+        run_entity_extraction as _extract,
+    )
+
+    max_retries = 2
     results: list[EntityExtractionResult] = []
     for i, article in enumerate(articles):
-        try:
-            response = await _extract(article.title, article.maintext)
-            u = response.token_usage
+        last_err: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await _extract(
+                    article.title,
+                    article.maintext,
+                    langfuse_tracing=langfuse_tracing,
+                )
+                u = response.token_usage
+                token_fields: dict[str, Any] = {}
+                if u:
+                    token_fields = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
+                results.append(
+                    EntityExtractionResult(
+                        article_index=i,
+                        mentioned_companies=response.output.mentioned_companies,
+                        named_entities=[
+                            e.model_dump()
+                            for e in response.output.named_entities
+                        ],
+                        duration_ms=response.total_duration_ms,
+                        **token_fields,
+                    )
+                )
+                token_info = (
+                    f", tokens: {u.total_tokens}"
+                    if u and u.total_tokens else ""
+                )
+                console.print(
+                    f"  [green]Entity extraction[/green] article "
+                    f"{i + 1}/{len(articles)} "
+                    f"({response.total_duration_ms}ms{token_info})"
+                )
+                last_err = None
+                break
+            except Exception as exc:
+                last_err = exc
+                if attempt < max_retries:
+                    logger.warning(
+                        "Article %d: attempt %d failed (%s), retrying…",
+                        i, attempt, exc,
+                    )
+
+        if last_err is not None:
+            logger.error(
+                "Entity extraction failed for article %d: %s", i, last_err,
+            )
             results.append(
                 EntityExtractionResult(
-                    article_index=i,
-                    mentioned_companies=response.output.mentioned_companies,
-                    named_entities=[e.model_dump() for e in response.output.named_entities],
-                    duration_ms=response.total_duration_ms,
-                    total_prompt_tokens=u.total_prompt_tokens if u else 0,
-                    total_completion_tokens=u.total_completion_tokens if u else 0,
-                    total_tokens=u.total_tokens if u else 0,
-                    context_used_percent=u.context_used_percent if u else 0.0,
+                    article_index=i, error=str(last_err),
                 )
             )
-            token_info = f", tokens: {u.total_tokens}" if u and u.total_tokens else ""
             console.print(
-                f"  [green]Entity extraction[/green] article {i + 1}/{len(articles)} ({response.total_duration_ms}ms{token_info})"
+                f"  [red]Entity extraction[/red] article "
+                f"{i + 1}/{len(articles)} FAILED: {last_err}"
             )
-        except Exception as exc:
-            logger.error(f"Entity extraction failed for article {i}: {exc}")
-            results.append(
-                EntityExtractionResult(article_index=i, error=str(exc))
-            )
-            console.print(f"  [red]Entity extraction[/red] article {i + 1}/{len(articles)} FAILED: {exc}")
 
     return results
 
 
-async def run_summarization(articles: list[ArticleRecord]) -> list[SummarizationResult]:
+async def run_summarization(
+    articles: list[ArticleRecord], *, langfuse_tracing: bool = False
+) -> list[SummarizationResult]:
     """Run the summarization agent over all articles sequentially.
 
     Uses the ``SummarizationAgent`` which accepts ``(title, body)`` and
     returns a ``SummarizationResponse`` with ``.text`` and ``.total_duration_ms``.
     """
-    from aieng.agent_evals.summarization import SummarizationAgent
-
-    agent = SummarizationAgent()
+    agent = SummarizationAgent(langfuse_tracing=langfuse_tracing)
     results: list[SummarizationResult] = []
     try:
         for i, article in enumerate(articles):
@@ -293,32 +413,77 @@ async def run_summarization(articles: list[ArticleRecord]) -> list[Summarization
 
 
 # ---------------------------------------------------------------------------
-# Pipeline orchestration
+# Pipeline orchestration (with immediate evaluation)
 # ---------------------------------------------------------------------------
+
+
+async def _ee_branch(
+    articles: list[ArticleRecord],
+    *,
+    langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
+) -> list[EntityExtractionResult]:
+    """Run entity extraction agent then evaluate immediately."""
+    results = await run_entity_extraction(articles, langfuse_tracing=langfuse_tracing)
+    if results:
+        run_entity_extraction_evals(
+            results, articles, langfuse=langfuse_tracing, run_context=run_context,
+        )
+    return results
+
+
+async def _sum_branch(
+    articles: list[ArticleRecord],
+    *,
+    langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
+) -> list[SummarizationResult]:
+    """Run summarization agent then evaluate immediately."""
+    results = await run_summarization(articles, langfuse_tracing=langfuse_tracing)
+    if results:
+        await run_summarization_evals(
+            results, articles, langfuse=langfuse_tracing, run_context=run_context,
+        )
+    return results
 
 
 async def run_pipeline(
     articles: list[ArticleRecord],
     agents_to_run: list[str],
     *,
-    parallel: bool = False,
+    sequential: bool = False,
+    langfuse_tracing: bool = False,
+    run_context: dict[str, Any] | None = None,
 ) -> tuple[list[EntityExtractionResult], list[SummarizationResult]]:
-    """Run selected agent pipelines (sequential by default, optional parallel)."""
+    """Run selected agent pipelines with immediate evaluation.
+
+    By default both branches run concurrently.  Pass ``sequential=True``
+    to run one after the other (useful when rate-limited).
+    """
     entity_results: list[EntityExtractionResult] = []
     summarization_results: list[SummarizationResult] = []
 
-    if not parallel:
+    branch_kw: dict[str, Any] = {
+        "langfuse_tracing": langfuse_tracing,
+        "run_context": run_context,
+    }
+
+    if sequential:
         if "entity-extraction" in agents_to_run:
-            entity_results = await run_entity_extraction(articles)
+            entity_results = await _ee_branch(articles, **branch_kw)
         if "summarization" in agents_to_run:
-            summarization_results = await run_summarization(articles)
+            summarization_results = await _sum_branch(articles, **branch_kw)
         return entity_results, summarization_results
 
     tasks: dict[str, asyncio.Task[Any]] = {}
     if "entity-extraction" in agents_to_run:
-        tasks["entity-extraction"] = asyncio.create_task(run_entity_extraction(articles))
+        tasks["entity-extraction"] = asyncio.create_task(
+            _ee_branch(articles, **branch_kw)
+        )
     if "summarization" in agents_to_run:
-        tasks["summarization"] = asyncio.create_task(run_summarization(articles))
+        tasks["summarization"] = asyncio.create_task(
+            _sum_branch(articles, **branch_kw)
+        )
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
@@ -332,42 +497,6 @@ async def run_pipeline(
             summarization_results = result
 
     return entity_results, summarization_results
-
-
-# ---------------------------------------------------------------------------
-# Evaluation placeholders
-# ---------------------------------------------------------------------------
-
-
-def evaluate_entity_extraction(
-    results: list[EntityExtractionResult],
-    articles: list[ArticleRecord],
-) -> None:
-    """Placeholder for code-based entity extraction evaluation.
-
-    Will compare ``results[i].mentioned_companies`` / ``results[i].named_entities``
-    against ``articles[i].mentioned_companies`` / ``articles[i].named_entities``
-    using precision, recall, and F1 metrics.
-    """
-    successful = sum(1 for r in results if r.error is None)
-    console.print("\n[bold]Entity Extraction Evaluation[/bold] (placeholder)")
-    console.print(f"  {successful}/{len(results)} articles processed successfully")
-    console.print("  TODO: implement code-based metrics (precision, recall, F1)")
-
-
-def evaluate_summarization(
-    results: list[SummarizationResult],
-    articles: list[ArticleRecord],
-) -> None:
-    """Placeholder for LLM-as-a-Judge summarization evaluation.
-
-    Will compare ``results[i].summary`` against ``articles[i].description``
-    using condenseness and completeness rubrics via a Gemini evaluator model.
-    """
-    successful = sum(1 for r in results if r.error is None)
-    console.print("\n[bold]Summarization Evaluation[/bold] (placeholder)")
-    console.print(f"  {successful}/{len(results)} articles processed successfully")
-    console.print("  TODO: implement LLM-as-a-Judge evaluation (condenseness, completeness)")
 
 
 # ---------------------------------------------------------------------------
@@ -418,11 +547,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the Knowledge QA evaluation workflow (entity extraction + summarization).",
     )
-    parser.add_argument(
+
+    data_group = parser.add_mutually_exclusive_group()
+    data_group.add_argument(
         "--data-file",
-        default=DEFAULT_DATA_FILE,
+        default=None,
         help=f"Path to input CSV file (default: {DEFAULT_DATA_FILE})",
     )
+    data_group.add_argument(
+        "--dataset-name",
+        default=None,
+        help=(
+            f"Name of a Langfuse dataset to load articles from "
+            f"(default when used: {DEFAULT_DATASET_NAME})"
+        ),
+    )
+
     parser.add_argument(
         "--sample-size",
         type=int,
@@ -442,9 +582,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which agent pipelines to run (default: both)",
     )
     parser.add_argument(
-        "--parallel",
+        "--sequential",
         action="store_true",
-        help="Run entity extraction and summarization concurrently (default: run one after the other)",
+        help="Run agent pipelines one after the other instead of concurrently",
+    )
+    parser.add_argument(
+        "--traces",
+        action="store_true",
+        help="Enable Langfuse tracing via OpenTelemetry and push evaluation scores to Langfuse",
     )
     return parser
 
@@ -453,24 +598,51 @@ async def async_main(args: argparse.Namespace) -> None:
     """Async entry point that orchestrates the full workflow."""
     start_time = time.time()
 
-    console.print(f"\n[bold]Loading data from[/bold] {args.data_file}")
-    articles = load_data(args.data_file, args.sample_size)
+    langfuse_tracing = getattr(args, "traces", False)
+
+    # --- Data loading (CSV or Langfuse dataset) ---
+    if args.dataset_name is not None:
+        dataset_name = args.dataset_name or DEFAULT_DATASET_NAME
+        console.print(f"\n[bold]Loading data from Langfuse dataset[/bold] {dataset_name}")
+        articles = load_data_from_langfuse(dataset_name, args.sample_size)
+        data_source_label = f"langfuse:{dataset_name}"
+    else:
+        data_file = args.data_file or DEFAULT_DATA_FILE
+        console.print(f"\n[bold]Loading data from[/bold] {data_file}")
+        articles = load_data(data_file, args.sample_size)
+        data_source_label = data_file
+
     console.print(f"  Loaded {len(articles)} articles")
 
-    console.print(f"\n[bold]Running agents:[/bold] {', '.join(args.agents)}")
+    # --- Workflow run identity (shared across all Langfuse eval traces) ---
+    workflow_run_id = f"workflow-run-{uuid.uuid4().hex[:12]}"
+    run_context: dict[str, Any] = {
+        "source": "workflow",
+        "run_id": workflow_run_id,
+        "data_source": data_source_label,
+        "agents": args.agents,
+        "mode": "sequential" if args.sequential else "parallel",
+    }
+    console.print(f"  Run ID: {workflow_run_id}")
+
+    # --- Run agent pipelines (evaluation happens inside each branch) ---
+    mode = run_context["mode"]
+    console.print(f"\n[bold]Running agents ({mode}):[/bold] {', '.join(args.agents)}")
     entity_results, summarization_results = await run_pipeline(
-        articles, args.agents, parallel=args.parallel
+        articles,
+        args.agents,
+        sequential=args.sequential,
+        langfuse_tracing=langfuse_tracing,
+        run_context=run_context,
     )
 
-    if entity_results:
-        evaluate_entity_extraction(entity_results, articles)
-    if summarization_results:
-        evaluate_summarization(summarization_results, articles)
+    if langfuse_tracing:
+        flush_traces()
 
     total_duration_ms = int((time.time() - start_time) * 1000)
 
     workflow_result = WorkflowResult(
-        data_file=args.data_file,
+        data_file=data_source_label,
         total_articles=len(articles),
         entity_extraction_results=entity_results,
         summarization_results=summarization_results,
