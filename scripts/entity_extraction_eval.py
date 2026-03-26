@@ -251,7 +251,7 @@ async def run_entity_extraction_batch(
         async with sem:
             try:
                 result = await run_entity_extraction(title=title, maintext=maintext)
-                out = result.model_dump(mode="json")
+                out = result.output.model_dump(mode="json")
             except Exception:
                 logger.exception("Entity extraction failed for %s", article_id)
                 out = {"mentioned_companies": [], "named_entities": []}
