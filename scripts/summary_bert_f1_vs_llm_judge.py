@@ -445,9 +445,15 @@ def main(argv: list[str] | None = None) -> int:
     async def _run_pipeline() -> tuple[dict[str, str], list[dict[str, Any]], dict[str, float], dict[str, Any]]:
         summaries_local = await sse.run_summarization_agent_batch(article_rows)
         ground_local = sse.ground_truth_from_article_rows(article_rows)
+        # Some bert-score/transformers combinations crash on empty candidates.
+        # Keep the raw summaries for judge + output, but use a safe placeholder for metric-only scoring.
+        safe_for_metrics: dict[str, str] = {
+            aid: (txt if (txt or "").strip() else "[NO_SUMMARY]")
+            for aid, txt in summaries_local.items()
+        }
         rows_local, ag_local = sse.run_eval(
             ground_local,
-            summaries_local,
+            safe_for_metrics,
             bert_model=args.bert_model,
             device=args.device,
             batch_size=args.batch_size,
