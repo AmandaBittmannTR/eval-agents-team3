@@ -192,13 +192,22 @@ def _norm_word(raw: str) -> str:
     return w
 
 
+def _normalize_entity_group(raw: Any) -> str:
+    """Normalize entity_group to a plain label (e.g. 'ENTITYGROUP.LOC' -> 'LOC')."""
+    s = str(raw).upper()
+    # Strip enum prefix like 'ENTITYGROUP.' produced by Pydantic enum serialization
+    if "." in s:
+        s = s.rsplit(".", 1)[-1]
+    return s
+
+
 def normalize_entity_set(entities: list[dict[str, Any]]) -> set[tuple[str, str]]:
     """Set of ``(entity_group, normalized_word)`` tuples for strict comparison."""
     result: set[tuple[str, str]] = set()
     for e in entities:
         w = _norm_word(str(e.get("word", "")))
         if w:
-            result.add((str(e.get("entity_group", "MISC")).upper(), w))
+            result.add((_normalize_entity_group(e.get("entity_group", "MISC")), w))
     return result
 
 
