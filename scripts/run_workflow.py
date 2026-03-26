@@ -40,7 +40,13 @@ _EVAL_RUNNER_DIR = str(Path(__file__).resolve().parent.parent / "implementations
 if _EVAL_RUNNER_DIR not in sys.path:
     sys.path.insert(0, _EVAL_RUNNER_DIR)
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 from eval_runner import run_entity_extraction_evals, run_summarization_evals  # noqa: E402
+
+import entity_extraction_eval as _ee_eval  # noqa: E402
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -413,6 +419,250 @@ async def run_summarization(
 
 
 # ---------------------------------------------------------------------------
+# Langfuse dataset experiment mode
+# ---------------------------------------------------------------------------
+
+
+async def _run_dataset_experiment(
+    dataset_name: str,
+    agents: list[str],
+    workflow_run_id: str,
+    run_context: dict[str, Any],
+) -> tuple[list[EntityExtractionResult], list[SummarizationResult]]:
+    """Run agents via Langfuse's ``run_experiment`` harness.
+
+    Each agent type produces a separate experiment run in the Langfuse
+    Dataset tab, with per-item traces and evaluation scores linked to the
+    dataset items.
+    """
+    from aieng.agent_evals.evaluation import run_experiment
+    from langfuse.experiment import Evaluation
+
+    entity_results: list[EntityExtractionResult] = []
+    summarization_results: list[SummarizationResult] = []
+
+    # -- Entity extraction experiment ----------------------------------
+    if "entity-extraction" in agents:
+        from aieng.agent_evals.entity_extraction.agent import (
+            run_entity_extraction as _extract,
+        )
+
+        _ee_index = {"n": 0}
+
+        async def _ee_task(*, item: Any, **kwargs: Any) -> dict[str, Any]:
+            input_data = item.input
+            if isinstance(input_data, str):
+                input_data = json.loads(input_data)
+            title = (input_data.get("title") or "") if isinstance(input_data, dict) else ""
+            maintext = (input_data.get("maintext") or "") if isinstance(input_data, dict) else ""
+
+            idx = _ee_index["n"]
+            _ee_index["n"] += 1
+
+            try:
+                response = await _extract(title, maintext)
+                out = response.output.model_dump(mode="json")
+                u = response.token_usage
+                token_kw: dict[str, Any] = {}
+                if u:
+                    token_kw = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
+                entity_results.append(EntityExtractionResult(
+                    article_index=idx,
+                    mentioned_companies=out.get("mentioned_companies", []),
+                    named_entities=out.get("named_entities", []),
+                    duration_ms=response.total_duration_ms,
+                    **token_kw,
+                ))
+                console.print(
+                    f"  [green]Entity extraction[/green] "
+                    f"item {idx + 1} ({response.total_duration_ms}ms)"
+                )
+                return out
+            except Exception as exc:
+                entity_results.append(EntityExtractionResult(
+                    article_index=idx, error=str(exc),
+                ))
+                console.print(
+                    f"  [red]Entity extraction[/red] "
+                    f"item {idx + 1} FAILED: {exc}"
+                )
+                return {
+                    "mentioned_companies": [],
+                    "named_entities": [],
+                    "error": str(exc),
+                }
+
+        def _ee_evaluator(
+            *,
+            input: Any,  # noqa: A002
+            output: Any,
+            expected_output: Any,
+            metadata: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> list[Evaluation]:
+            if isinstance(output, dict) and output.get("error"):
+                return []
+            ground: dict[str, str] = {}
+            if isinstance(expected_output, dict):
+                ground = {
+                    k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
+                    for k, v in expected_output.items()
+                }
+            elif metadata:
+                gt_raw = metadata.get("ground_truth_format")
+                if gt_raw:
+                    gt = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
+                    ground = {
+                        k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
+                        for k, v in gt.items()
+                    }
+
+            if not ground:
+                return []
+
+            scores = _ee_eval._score_item(output, ground)
+            return [
+                Evaluation(
+                    name="companies_f1",
+                    value=scores["companies_f1"],
+                ),
+                Evaluation(
+                    name="entities_f1",
+                    value=scores["entities_f1"],
+                ),
+                Evaluation(
+                    name="entities_relaxed_f1",
+                    value=scores["entities_relaxed_f1"],
+                ),
+                Evaluation(
+                    name="word_f1",
+                    value=scores["word_f1"],
+                ),
+            ]
+
+        console.print(
+            "\n[bold cyan]Running Entity Extraction experiment[/bold cyan]"
+        )
+        run_experiment(
+            dataset_name,
+            name=f"Entity Extraction - {workflow_run_id}",
+            description="Entity extraction via workflow pipeline",
+            task=_ee_task,
+            evaluators=[_ee_evaluator],
+            max_concurrency=1,
+            metadata=run_context,
+        )
+
+    # -- Summarization experiment --------------------------------------
+    if "summarization" in agents:
+        from aieng.agent_evals.evaluation.graders.config import (
+            LLMRequestConfig,
+        )
+        from aieng.agent_evals.summarization.summarization_grader import (
+            evaluate_summarization_async,
+        )
+
+        _sum_agent = SummarizationAgent()
+        _sum_index = {"n": 0}
+
+        async def _sum_task(*, item: Any, **kwargs: Any) -> str:
+            input_data = item.input
+            if isinstance(input_data, str):
+                input_data = json.loads(input_data)
+            title = (input_data.get("title") or "") if isinstance(input_data, dict) else ""
+            maintext = (input_data.get("maintext") or "") if isinstance(input_data, dict) else ""
+
+            idx = _sum_index["n"]
+            _sum_index["n"] += 1
+
+            try:
+                response = await _sum_agent.summarize_async(
+                    title=title,
+                    body=maintext,
+                    session_id=f"exp-{idx}-{uuid.uuid4().hex[:8]}",
+                )
+                duration_ms = response.total_duration_ms or 0
+                token_kw: dict[str, Any] = {}
+                if response.token_usage:
+                    u = response.token_usage
+                    token_kw = {
+                        "total_prompt_tokens": u.total_prompt_tokens,
+                        "total_completion_tokens": u.total_completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "context_used_percent": u.context_used_percent,
+                    }
+                summarization_results.append(SummarizationResult(
+                    article_index=idx,
+                    summary=response.text,
+                    duration_ms=duration_ms,
+                    **token_kw,
+                ))
+                console.print(
+                    f"  [blue]Summarization[/blue] "
+                    f"item {idx + 1} ({duration_ms}ms)"
+                )
+                return response.text
+            except Exception as exc:
+                summarization_results.append(SummarizationResult(
+                    article_index=idx, error=str(exc),
+                ))
+                console.print(
+                    f"  [red]Summarization[/red] "
+                    f"item {idx + 1} FAILED: {exc}"
+                )
+                return f"Error: {exc}"
+
+        async def _sum_evaluator(
+            *,
+            input: Any,  # noqa: A002
+            output: str,
+            expected_output: Any,
+            metadata: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> list[Evaluation]:
+            if output.startswith("Error:"):
+                return []
+            if isinstance(input, dict):
+                title = input.get("title", "")
+                maintext = input.get("maintext", "")
+            else:
+                title, maintext = "", str(input or "")
+
+            try:
+                result = await evaluate_summarization_async(
+                    title=title,
+                    body=maintext,
+                    summary=output,
+                    model_config=LLMRequestConfig(temperature=0.0),
+                )
+                return result.to_evaluations()
+            except Exception as exc:
+                logger.error("LLM-judge eval failed: %s", exc)
+                return []
+
+        console.print(
+            "\n[bold cyan]Running Summarization experiment[/bold cyan]"
+        )
+        run_experiment(
+            dataset_name,
+            name=f"Summarization - {workflow_run_id}",
+            description="Summarization via workflow pipeline",
+            task=_sum_task,
+            evaluators=[_sum_evaluator],
+            max_concurrency=1,
+            metadata=run_context,
+        )
+        await _sum_agent.aclose()
+
+    return entity_results, summarization_results
+
+
+# ---------------------------------------------------------------------------
 # Pipeline orchestration (with immediate evaluation)
 # ---------------------------------------------------------------------------
 
@@ -628,13 +878,26 @@ async def async_main(args: argparse.Namespace) -> None:
     # --- Run agent pipelines (evaluation happens inside each branch) ---
     mode = run_context["mode"]
     console.print(f"\n[bold]Running agents ({mode}):[/bold] {', '.join(args.agents)}")
-    entity_results, summarization_results = await run_pipeline(
-        articles,
-        args.agents,
-        sequential=args.sequential,
-        langfuse_tracing=langfuse_tracing,
-        run_context=run_context,
-    )
+
+    if args.dataset_name is not None and langfuse_tracing:
+        console.print(
+            "[bold]Dataset experiment mode:[/bold] results will appear in "
+            "the Langfuse Dataset tab"
+        )
+        entity_results, summarization_results = await _run_dataset_experiment(
+            dataset_name=dataset_name,
+            agents=args.agents,
+            workflow_run_id=workflow_run_id,
+            run_context=run_context,
+        )
+    else:
+        entity_results, summarization_results = await run_pipeline(
+            articles,
+            args.agents,
+            sequential=args.sequential,
+            langfuse_tracing=langfuse_tracing,
+            run_context=run_context,
+        )
 
     if langfuse_tracing:
         flush_traces()
