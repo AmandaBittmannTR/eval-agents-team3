@@ -75,13 +75,13 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
         article_data = item
     else:
         raise ValueError(f"Unexpected item format: {type(item)}")
-    
+
     title = article_data.get("title", "")
     maintext = article_data.get("maintext", "")
-    
+
     if not title and not maintext:
         raise ValueError("Item must contain 'title' and/or 'maintext' fields")
-    
+
     logger.info(f"Running summarization agent on: {title[:80]}...")
 
     try:
@@ -99,13 +99,13 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
             "summary_length": len(response.text),
             "has_reasoning_chain": bool(response.reasoning_chain),
         }
-        
+
         # Add reasoning chain if available, otherwise note it's empty
         if response.reasoning_chain:
             metadata["reasoning_chain"] = response.reasoning_chain[:3]  # Limit to first 3 items
         else:
             metadata["reasoning_note"] = "No explicit reasoning chain generated (normal for simple tasks)"
-            
+
         client_manager.langfuse_client.update_current_span(metadata=metadata)
 
         return response.text
@@ -151,7 +151,7 @@ async def summarization_evaluator(
         # Fallback: try to parse as string or use empty values
         title = ""
         maintext = str(input) if input else ""
-    
+
     logger.info(f"Evaluating summary for article: {title[:50]}...")
 
     try:
