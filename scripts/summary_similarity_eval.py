@@ -197,7 +197,7 @@ def run_eval(
                 "bertscore_f1_vs_article": bert_f1[i],
             },
         )
-        logger.debug(
+        logger.info(
             "[%s] cosine_tfidf=%.4f | bertscore_f1=%.4f\n"
             "  summary   (%4d chars): %s\n"
             "  reference (%4d chars): %s\n"

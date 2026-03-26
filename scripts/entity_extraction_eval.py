@@ -300,7 +300,7 @@ def _score_item(
     co_recall = len(co_tp) / len(expected_companies) if expected_companies else 0.0
     co_f1 = _f1(co_precision, co_recall)
 
-    logger.debug(
+    logger.info(
         "Companies | predicted=%s | expected=%s | tp=%s | fp=%s | fn=%s | P=%.3f R=%.3f F1=%.3f",
         sorted(predicted_companies), sorted(expected_companies),
         sorted(co_tp), sorted(co_fp), sorted(co_fn),
@@ -321,7 +321,7 @@ def _score_item(
     ent_recall = len(ent_tp) / len(expected_entity_set) if expected_entity_set else 0.0
     ent_f1 = _f1(ent_precision, ent_recall)
 
-    logger.debug(
+    logger.info(
         "Strict entities | predicted=%s | expected=%s | tp=%s | fp=%s | fn=%s | P=%.3f R=%.3f F1=%.3f",
         sorted(predicted_entity_set), sorted(expected_entity_set),
         sorted(ent_tp), sorted(ent_fp), sorted(ent_fn),
@@ -338,7 +338,7 @@ def _score_item(
     rel_recall = len(rel_tp) / len(exp_relaxed) if exp_relaxed else 0.0
     rel_f1 = _f1(rel_precision, rel_recall)
 
-    logger.debug(
+    logger.info(
         "Relaxed entities | predicted=%s | expected=%s | tp=%s | fp=%s | fn=%s | P=%.3f R=%.3f F1=%.3f",
         sorted(pred_relaxed), sorted(exp_relaxed),
         sorted(rel_tp), sorted(rel_fp), sorted(rel_fn),
@@ -353,7 +353,7 @@ def _score_item(
     word_recall = len(word_tp) / len(expected_words) if expected_words else 0.0
     word_f1 = _f1(word_precision, word_recall)
 
-    logger.debug(
+    logger.info(
         "Word overlap | predicted=%s | expected=%s | matched=%s | P=%.3f R=%.3f F1=%.3f",
         sorted(predicted_words), sorted(expected_words),
         sorted(word_tp),

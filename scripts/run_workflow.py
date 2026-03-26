@@ -659,9 +659,7 @@ def main() -> None:
     """CLI entry point."""
     load_dotenv()
     ensure_google_genai_env()
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s | %(name)s | %(message)s")
-    logging.getLogger().setLevel(logging.DEBUG)
-    logging.getLogger("entity_extraction_eval").setLevel(logging.DEBUG)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
     parser = build_parser()
     args = parser.parse_args()
