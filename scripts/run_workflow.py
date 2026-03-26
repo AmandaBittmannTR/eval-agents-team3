@@ -660,6 +660,8 @@ def main() -> None:
     load_dotenv()
     ensure_google_genai_env()
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)s | %(name)s | %(message)s")
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("entity_extraction_eval").setLevel(logging.DEBUG)
 
     parser = build_parser()
     args = parser.parse_args()
