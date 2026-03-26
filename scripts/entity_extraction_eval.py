@@ -142,10 +142,13 @@ def parse_named_entities(raw: Any) -> list[dict[str, Any]]:
         if not raw or raw in ("[]", "None"):
             return []
         try:
-            parsed = ast.literal_eval(raw)
-        except (ValueError, SyntaxError):
-            logger.warning("Could not parse named_entities: %s", raw[:200])
-            return []
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            try:
+                parsed = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                logger.warning("Could not parse named_entities: %s", raw[:200])
+                return []
     else:
         parsed = raw
     if not isinstance(parsed, list):
