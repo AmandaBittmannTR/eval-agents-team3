@@ -37,13 +37,13 @@ class SummarizationResult(BaseModel):
     
     accuracy: float = Field(
         default=0.0, 
-        description="How factually correct the summary is (0-1). Checks for hallucinations and misrepresentations.",
+        description="How factually correct the summary is (0-1). Checks for hallucinations, misrepresentations, and verbatim copying.",
         ge=0.0, 
         le=1.0
     )
     completeness: float = Field(
         default=0.0, 
-        description="How well the summary captures key information (0-1). Assesses coverage of important points.",
+        description="How well the summary captures ALL main points (0-1). Assesses comprehensive coverage of critical information.",
         ge=0.0, 
         le=1.0
     )
@@ -100,12 +100,12 @@ class SummarizationResult(BaseModel):
             Evaluation(
                 name="Accuracy",
                 value=self.accuracy,
-                comment=f"Factual correctness: {self.accuracy:.2f}"
+                comment=f"Factual correctness & original phrasing: {self.accuracy:.2f}"
             ),
             Evaluation(
                 name="Completeness", 
                 value=self.completeness,
-                comment=f"Coverage of key information: {self.completeness:.2f}"
+                comment=f"Coverage of ALL main points: {self.completeness:.2f}"
             ),
             Evaluation(
                 name="Conciseness",
@@ -161,8 +161,8 @@ class SummarizationGraderResponse(BaseModel):
         alias="Summary Evaluation",
         description=(
             "Dictionary containing: "
-            "Accuracy (float 0-1) - Factual correctness; "
-            "Completeness (float 0-1) - Coverage of key information; "
+            "Accuracy (float 0-1) - Factual correctness & original phrasing (no verbatim copying); "
+            "Completeness (float 0-1) - Coverage of ALL main points systematically verified; "
             "Conciseness (float 0-1) - Brevity and focus; "
             "Clarity (float 0-1) - Readability and coherence; "
             "Overall Quality (str) - excellent/good/fair/poor; "
@@ -173,89 +173,37 @@ class SummarizationGraderResponse(BaseModel):
 
 # Summarization grader prompt designed for financial news
 SUMMARIZATION_GRADER_PROMPT = """\
-Your task is to evaluate the quality of an AI-generated summary of a financial news article.
+Evaluate this AI-generated financial news summary across four dimensions (0-1 scale):
 
 **Summary Evaluation Task**
-* **Purpose:** Assess whether the AI summary meets the specific requirements for financial news summarization: 2-4 sentences, captures main events, includes key entities, mentions financial figures, and stays grounded in the source material.
+* **Purpose:** Assess whether the AI summary meets the specific requirements for financial news summarization: 2-4 sentences, captures ALL main points, includes key entities, mentions financial figures, uses original phrasing (no verbatim copying), and stays grounded in the source material.
 * **Process:**
-  * Read the original article (title + body) carefully to identify the main event/announcement, key companies/people involved, and significant financial figures.
+  * Read the original article (title + body) carefully to identify ALL main points, events, announcements, key companies/people involved, and significant financial figures.
   * Analyze the AI-generated summary against the original article and the specific summarization requirements.
+  * Check specifically for verbatim copying of sentences or phrases from the original text.
   * Evaluate the summary across four key dimensions:
-    * **Accuracy (0-1)**: Are all facts in the summary correct and based solely on the article content? Are there any hallucinations, misrepresentations, or added outside information?
-    * **Completeness (0-1)**: Does the summary capture the main event/announcement, key companies or people involved, and significant financial figures when present? Are critical elements missing?
+    * **Accuracy (0-1)**: Are all facts in the summary correct and based solely on the article content? Are there any hallucinations, misrepresentations, or added outside information? Does the summary avoid verbatim copying of sentences from the original text?
+    * **Completeness (0-1)**: Does the summary capture ALL main points from the article including the primary event/announcement, ALL key companies or people involved, and ALL significant financial figures when present? Systematically verify each major point is addressed.
     * **Conciseness (0-1)**: Is the summary 2-4 sentences long? Does it avoid unnecessary details while including essential information? Is it appropriately brief for financial news?
     * **Clarity (0-1)**: Is the summary well-written, coherent, and easy to understand? Is the language clear and professional without headings, labels, or preamble?
   * Assign an overall quality rating: "excellent", "good", "fair", or "poor"
 * **Explanation:** Provide a detailed explanation of your assessment, referencing how well the summary meets the specific requirements and how it relates to the original article.
 
 **Scoring Guidelines:**
+* **1.0**: Excellent - fully meets requirements
+* **0.8-0.9**: Good - meets requirements with minor issues
+* **0.6-0.7**: Fair - partially meets requirements, some problems
+* **0.4-0.5**: Poor - significant issues, major improvements needed
+* **0.0-0.3**: Very poor - fails to meet basic requirements
 
-**Accuracy (Factual Correctness & Groundedness):**
-* **1.0**: All facts are correct and based solely on article content, no hallucinations or outside information
-* **0.8-0.9**: Facts are correct with minor interpretation issues, well-grounded in source
-* **0.6-0.7**: Mostly correct facts but some minor inaccuracies or slight overreach beyond article
-* **0.4-0.5**: Several factual errors or some information not found in the original article
-* **0.2-0.3**: Major factual errors or significant hallucinated content
-* **0.0-0.1**: Severely inaccurate or completely fabricated information
-
-**Completeness (Coverage of Required Elements):**
-* **1.0**: Captures main event/announcement, key companies/people, and all relevant financial figures
-* **0.8-0.9**: Captures main elements with minor omissions of secondary details
-* **0.6-0.7**: Captures main event but misses some key companies, people, or financial figures
-* **0.4-0.5**: Captures basic information but omits several important elements
-* **0.2-0.3**: Misses main event or most key entities/figures
-* **0.0-0.1**: Fails to capture the primary purpose or content of the article
-
-**Conciseness (Length & Focus):**
-* **1.0**: Exactly 2-4 sentences, perfect balance of brevity and essential information
-* **0.8-0.9**: 2-4 sentences with excellent focus, minor wordiness or slight under-coverage
-* **0.6-0.7**: Appropriate length but some unnecessary details or missing key points
-* **0.4-0.5**: Too long (5+ sentences) or too short (1 sentence), affects information balance
-* **0.2-0.3**: Significantly too long or too short, poor information prioritization
-* **0.0-0.1**: Extremely poor length control, verbose or overly terse
-
-**Clarity (Professional Communication):**
-* **1.0**: Clear, professional language with no headings/labels/preamble, excellent readability
-* **0.8-0.9**: Very clear and professional with minor style issues
-* **0.6-0.7**: Generally clear but some awkward phrasing or minor formatting issues
-* **0.4-0.5**: Readable but includes unwanted headings/labels or unclear language
-* **0.2-0.3**: Poor clarity, includes significant formatting issues or confusing language
-* **0.0-0.1**: Very unclear, includes headings/preamble, or incomprehensible
-
-**Overall Quality Guidelines:**
-* **Excellent**: All dimensions score 0.8+, meets all agent requirements, publication-ready
-* **Good**: Most dimensions score 0.6+, minor improvements needed, mostly follows requirements
-* **Fair**: Mixed performance, significant improvements needed, partially follows requirements
-* **Poor**: Multiple dimensions below 0.5, major revision required, fails key requirements
+**Overall Quality Ratings:**
+* "excellent": All dimensions 0.8+
+* "good": Most dimensions 0.6+, minor improvements needed
+* "fair": Mixed performance, significant improvements needed
+* "poor": Multiple dimensions below 0.5, major revision required
 
 **Output Format:**
-Your evaluation *must* be structured as a nested JSON dictionary with the following top-level key: "Summary Evaluation". Please return NULL if any of the inputs are empty or invalid.
-
-The value for "Summary Evaluation" should be a dictionary containing:
-- "Accuracy" (float 0-1)
-- "Completeness" (float 0-1) 
-- "Conciseness" (float 0-1)
-- "Clarity" (float 0-1)
-- "Overall Quality" (string: "excellent", "good", "fair", or "poor")
-- "Explanation" (string with detailed reasoning)
-
-Make sure you return a valid JSON string. Pay special attention to quotes, commas and special characters in the JSON string. Make sure to escape all special characters and quotes in the JSON string.
-
-**Example:**
-```json
-{{
-  "Summary Evaluation": {{
-    "Accuracy": 0.9,
-    "Completeness": 0.8,
-    "Conciseness": 0.9,
-    "Clarity": 0.9,
-    "Overall Quality": "good",
-    "Explanation": "The summary is factually accurate and grounded in the article content with no hallucinations. It captures the main announcement and key company involved, though it misses one significant financial figure mentioned. The summary is exactly 3 sentences, meeting the length requirement perfectly. The writing is clear, professional, and contains no headings or preamble as required."
-  }}
-}}
-```
-
-**Now, proceed with the evaluation using the provided article and AI summary.**
+Return a JSON dictionary with "Summary Evaluation" containing: Accuracy (float), Completeness (float), Conciseness (float), Clarity (float), Overall Quality (string), and Explanation (string with detailed reasoning).
 
 Original Article:
 Title: {title}
@@ -267,8 +215,7 @@ AI-Generated Summary to Evaluate:
 {summary}
 
 --------------------
-Rating:
-"""
+Rating:"""
 
 
 def _calculate_result_from_grader(
