@@ -367,17 +367,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     judge_cfg = LLMRequestConfig(model=args.judge_model, timeout_sec=args.judge_timeout_sec)
-    try:
-        judge_by_id = asyncio.run(
-            run_llm_judge_batch(
+
+    async def _run_judge_and_close() -> dict[str, tuple[float | None, dict[str, Any], list[Evaluation]]]:
+        # Close inside the same event loop as the judge calls. A second asyncio.run(close())
+        # after the first run() exits leaves httpx tied to a closed loop and raises RuntimeError.
+        try:
+            return await run_llm_judge_batch(
                 article_rows=article_rows,
                 summaries=candidate_summaries,
                 judge_config=judge_cfg,
                 concurrency=args.judge_concurrency,
             )
-        )
-    finally:
-        asyncio.run(AsyncClientManager.get_instance().close())
+        finally:
+            await AsyncClientManager.get_instance().close()
+
+    judge_by_id = asyncio.run(_run_judge_and_close())
 
     points: list[dict[str, Any]] = []
     for row in metric_rows:
