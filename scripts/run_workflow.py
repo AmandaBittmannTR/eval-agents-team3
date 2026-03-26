@@ -144,6 +144,7 @@ class WorkflowResult(BaseModel):
     entity_extraction_results: list[EntityExtractionResult] = Field(default_factory=list)
     summarization_results: list[SummarizationResult] = Field(default_factory=list)
     total_duration_ms: int = 0
+    workflow_run_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +770,7 @@ def print_summary(result: WorkflowResult) -> None:
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
 
+    table.add_row("Workflow run ID", result.workflow_run_id)
     table.add_row("Data file", result.data_file)
     table.add_row("Articles processed", str(result.total_articles))
 
@@ -905,6 +907,7 @@ async def async_main(args: argparse.Namespace) -> None:
     total_duration_ms = int((time.time() - start_time) * 1000)
 
     workflow_result = WorkflowResult(
+        workflow_run_id=workflow_run_id,
         data_file=data_source_label,
         total_articles=len(articles),
         entity_extraction_results=entity_results,
