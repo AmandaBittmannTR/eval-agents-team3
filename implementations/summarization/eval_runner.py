@@ -68,15 +68,38 @@ def _build_ee_ground_and_agent(
         article = articles[idx]
         aid = f"article:{idx}"
 
+        gt_companies = article.mentioned_companies
+        gt_entities = article.named_entities
+        ag_companies = result.mentioned_companies
+        ag_entities = result.named_entities
+
+        if idx == 0:
+            logger.debug(
+                "=== DIAGNOSTIC (article 0) ===\n"
+                "  GT companies (%d): %s\n"
+                "  AG companies (%d): %s\n"
+                "  GT entities  (%d): %s\n"
+                "  AG entities  (%d): %s",
+                len(gt_companies), gt_companies,
+                len(ag_companies), ag_companies,
+                len(gt_entities),
+                [e.get("word") for e in gt_entities] if gt_entities else [],
+                len(ag_entities),
+                [
+                    e.get("word") if isinstance(e, dict) else e
+                    for e in ag_entities
+                ] if ag_entities else [],
+            )
+
         ground[aid] = {
-            "mentioned_companies": json.dumps(article.mentioned_companies),
-            "named_entities": json.dumps(article.named_entities),
+            "mentioned_companies": json.dumps(gt_companies),
+            "named_entities": json.dumps(gt_entities),
             "title": article.title,
             "maintext": article.maintext,
         }
         agent[aid] = {
-            "mentioned_companies": result.mentioned_companies,
-            "named_entities": result.named_entities,
+            "mentioned_companies": ag_companies,
+            "named_entities": ag_entities,
         }
 
     return ground, agent

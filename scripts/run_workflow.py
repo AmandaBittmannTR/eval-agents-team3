@@ -508,20 +508,18 @@ async def _run_dataset_experiment(
         ) -> list[Evaluation]:
             if isinstance(output, dict) and output.get("error"):
                 return []
+
             ground: dict[str, str] = {}
-            if isinstance(expected_output, dict):
+            gt_raw = (metadata or {}).get("ground_truth_format")
+            if gt_raw:
+                gt = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
                 ground = {
-                    k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
-                    for k, v in expected_output.items()
+                    k: (
+                        json.dumps(v) if isinstance(v, (list, dict))
+                        else str(v)
+                    )
+                    for k, v in gt.items()
                 }
-            elif metadata:
-                gt_raw = metadata.get("ground_truth_format")
-                if gt_raw:
-                    gt = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
-                    ground = {
-                        k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
-                        for k, v in gt.items()
-                    }
 
             if not ground:
                 return []
