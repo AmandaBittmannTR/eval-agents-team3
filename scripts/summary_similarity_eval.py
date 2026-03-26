@@ -197,6 +197,18 @@ def run_eval(
                 "bertscore_f1_vs_article": bert_f1[i],
             },
         )
+        logger.info(
+            "[%s] cosine_tfidf=%.4f | bertscore_f1=%.4f\n"
+            "  summary   (%4d chars): %s\n"
+            "  reference (%4d chars): %s\n"
+            "  maintext  (%4d chars): %s",
+            article_id,
+            cosine_scores[i],
+            bert_f1[i],
+            len(summaries[i]), summaries[i][:200],
+            len(descriptions[i]), descriptions[i][:200],
+            len(articles[i]), articles[i][:200],
+        )
 
     aggregates = {
         "mean_cosine_tfidf_vs_reference_summary": sum(cosine_scores) / len(cosine_scores),
@@ -384,10 +396,21 @@ def main(argv: list[str] | None = None) -> int:
             "trace scores (requires LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST in .env)."
         ),
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable DEBUG logging to show per-article scoring details (summary vs reference vs maintext).",
+    )
     args = parser.parse_args(argv)
     article_limit: int | None = None if args.all else args.limit
 
-    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(levelname)s: %(message)s")
+    if args.quiet:
+        log_level = logging.WARNING
+    elif args.debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
 
     repo_root = Path(__file__).resolve().parents[1]
     # Configs() looks for ".env" relative to cwd; loading repo .env fixes runs from `scripts/`.
